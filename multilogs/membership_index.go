@@ -5,17 +5,16 @@
 package multilogs
 
 import (
-	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 
 	"github.com/dgraph-io/badger/v3"
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
+	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/private"
-	librarian "github.com/ssbc/margaret/indexes"
-	libbader "github.com/ssbc/margaret/indexes/badger"
 	"go.mindeco.de/log"
 	"go.mindeco.de/log/level"
 )
@@ -26,7 +25,9 @@ type Members map[string]bool
 type MembershipStore struct {
 	logger log.Logger
 
-	idx         librarian.SeqSetterIndex
+	db     *badger.DB
+	prefix []byte
+
 	self        refs.FeedRef
 	unboxer     *private.Manager
 	combinedidx *CombinedIndex
@@ -36,30 +37,65 @@ var _ io.Closer = (*MembershipStore)(nil)
 
 var keyPrefix = []byte("group-members")
 
-// NewMembershipIndex tracks group/add-member messages and triggers re-reading box2 messages by the invited people that couldn't be read before.
-func NewMembershipIndex(logger log.Logger, db *badger.DB, self refs.FeedRef, unboxer *private.Manager, comb *CombinedIndex) (*MembershipStore, librarian.SinkIndex) {
-	var store = MembershipStore{
+// NewMembershipIndex tracks group/add-member messages and triggers re-reading box2 messages
+// by the invited people that couldn't be read before.
+func NewMembershipIndex(logger log.Logger, db *badger.DB, self refs.FeedRef, unboxer *private.Manager, comb *CombinedIndex) *MembershipStore {
+	return &MembershipStore{
 		logger: logger,
 
-		idx:         libbader.NewIndexWithKeyPrefix(db, Members{}, keyPrefix),
+		db:     db,
+		prefix: keyPrefix,
+
 		self:        self,
 		unboxer:     unboxer,
 		combinedidx: comb,
 	}
-
-	snk := librarian.NewSinkIndex(store.updateFn, store.idx)
-	return &store, snk
 }
 
-func (mc MembershipStore) Close() error {
-	return mc.idx.Close()
+func (mc *MembershipStore) Close() error {
+	return nil
 }
 
-func (mc MembershipStore) updateFn(ctx context.Context, seq int64, val interface{}, idx librarian.SetterIndex) error {
-	msg, ok := val.(refs.Message)
-	if !ok {
-		return fmt.Errorf("not a message: %T", val)
+func (mc *MembershipStore) getMembers(key []byte) (Members, error) {
+	var members Members
+	err := mc.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(key)
+		if err != nil {
+			if errors.Is(err, badger.ErrKeyNotFound) {
+				return nil
+			}
+			return err
+		}
+		return item.Value(func(val []byte) error {
+			return json.Unmarshal(val, &members)
+		})
+	})
+	if err != nil {
+		return nil, err
 	}
+	if members == nil {
+		members = make(Members)
+	}
+	return members, nil
+}
+
+func (mc *MembershipStore) setMembers(key []byte, members Members) error {
+	return mc.db.Update(func(txn *badger.Txn) error {
+		val, err := json.Marshal(members)
+		if err != nil {
+			return err
+		}
+		return txn.Set(key, val)
+	})
+}
+
+// ProcessEntry processes a single group/add-member message, updating membership tracking
+// and triggering Box2Reindex for newly invited members.
+func (mc *MembershipStore) ProcessEntry(seq int64, mm *multimsg.MultiMessage) error {
+	if mm.Message == nil {
+		return nil
+	}
+	msg := mm.Message
 
 	if msg.Author().Equal(mc.self) {
 		// our own message - all is done already
@@ -100,24 +136,11 @@ func (mc MembershipStore) updateFn(ctx context.Context, seq int64, val interface
 	)
 
 	idxAddr := storedrefs.Message(groupID)
-	state, err := mc.idx.Get(ctx, idxAddr)
+	badgerKey := append(mc.prefix, []byte(idxAddr)...)
+
+	currentMembers, err := mc.getMembers(badgerKey)
 	if err != nil {
 		return err
-	}
-
-	statev, err := state.Value()
-	if err != nil {
-		return err
-	}
-
-	var currentMembers Members
-	switch tv := statev.(type) {
-	case Members:
-		currentMembers = tv
-	case librarian.UnsetValue:
-		currentMembers = make(Members, 0)
-	default:
-		return fmt.Errorf("not a Member: %T", statev)
 	}
 
 	for _, nm := range newMembers {
@@ -155,7 +178,7 @@ func (mc MembershipStore) updateFn(ctx context.Context, seq int64, val interface
 		currentMembers[whoToIndex.String()] = true
 	}
 
-	err = mc.idx.Set(ctx, idxAddr, currentMembers)
+	err = mc.setMembers(badgerKey, currentMembers)
 	if err != nil {
 		return err
 	}

@@ -6,7 +6,6 @@ package multilogs
 
 import (
 	"bytes"
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -18,10 +17,10 @@ import (
 
 	"github.com/dgraph-io/sroar"
 	"github.com/keks/persist"
-	"github.com/ssbc/margaret"
-	"github.com/ssbc/margaret/indexes"
-	"github.com/ssbc/margaret/multilog"
-	"github.com/ssbc/margaret/multilog/roaring"
+
+	margaret "github.com/ssbc/margaret/v2"
+	"github.com/ssbc/margaret/v2/multilog"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
 
 	gabbygrove "github.com/ssbc/go-gabbygrove"
 	"github.com/ssbc/go-ssb"
@@ -34,16 +33,16 @@ import (
 )
 
 // NewCombinedIndex creates one big index which updates the multilogs users, byType, private and tangles.
-// Compared to the "old" fatbot approach of just having 4 independant indexes,
+// Compared to the "old" fatbot approach of just having 4 independent indexes,
 // this one updates all 4 of them, resulting in less read-overhead
-// while also being able to index private massages by tangle and type.
+// while also being able to index private messages by tangle and type.
 func NewCombinedIndex(
 	repoPath string,
 	box *private.Manager,
 	self refs.FeedRef,
-	rxlog margaret.Log,
+	rxlog margaret.Log[*multimsg.MultiMessage],
 	u, p, bt, tan *roaring.MultiLog,
-	oh multilog.MultiLog,
+	oh *roaring.MultiLog,
 	sm *statematrix.StateMatrix,
 ) (*CombinedIndex, error) {
 	r := repo.New(repoPath)
@@ -80,20 +79,18 @@ func NewCombinedIndex(
 	return idx, nil
 }
 
-var _ indexes.SinkIndex = (*CombinedIndex)(nil)
-
 type CombinedIndex struct {
 	self  refs.FeedRef
 	boxer *private.Manager
 
-	rxlog margaret.Log
+	rxlog margaret.Log[*multimsg.MultiMessage]
 
 	users   *roaring.MultiLog
 	private *roaring.MultiLog
 	byType  *roaring.MultiLog
 	tangles *roaring.MultiLog
 
-	orderdHelper multilog.MultiLog
+	orderdHelper *roaring.MultiLog
 
 	ebtState *statematrix.StateMatrix
 
@@ -101,16 +98,24 @@ type CombinedIndex struct {
 	l    *sync.Mutex
 }
 
-// Box2Reindex takes advantage of the other bitmap indexes to reindex just the messages from the passed author that are box2 but not yet readable by us.
-//	1) taking private:meta:box2
-//	3) ANDing it with the one of the author (intersection)
-//	5) subtracting all the messages we _can_ read (private:box2:$ourFeed)
+// appendSeq creates a *roaring.Seq from an int64 and appends it to the log.
+func appendSeq(log margaret.Log[*roaring.Seq], seq int64) error {
+	s := roaring.Seq(seq)
+	_, err := log.Append(&s)
+	return err
+}
+
+// Box2Reindex takes advantage of the other bitmap indexes to reindex just the messages
+// from the passed author that are box2 but not yet readable by us.
+//  1. taking private:meta:box2
+//  2. ANDing it with the one of the author (intersection)
+//  3. subtracting all the messages we _can_ read (private:box2:$ourFeed)
 func (idx *CombinedIndex) Box2Reindex(author refs.FeedRef) error {
 	idx.l.Lock()
 	defer idx.l.Unlock()
 
 	// (1) all messages in boxed2 format
-	allBox2, err := idx.private.LoadInternalBitmap(indexes.Addr("meta:box2"))
+	allBox2, err := idx.private.LoadInternalBitmap(multilog.Addr("meta:box2"))
 	if err != nil {
 		return fmt.Errorf("error getting all box2 messages: %w", err)
 	}
@@ -118,7 +123,7 @@ func (idx *CombinedIndex) Box2Reindex(author refs.FeedRef) error {
 	// (2) all messages by the author we should re-index
 	fromAuthor, err := idx.users.LoadInternalBitmap(storedrefs.Feed(author))
 	if err != nil {
-		if !errors.Is(err, multilog.ErrSublogNotFound) {
+		if !errors.Is(err, multilog.ErrNotFound) {
 			return fmt.Errorf("error getting all from author: %w", err)
 		}
 		fromAuthor = sroar.NewBitmap()
@@ -133,7 +138,7 @@ func (idx *CombinedIndex) Box2Reindex(author refs.FeedRef) error {
 	}
 
 	// (4) all messages we can already decrypt
-	myReadableAddr := indexes.Addr("box2:") + storedrefs.Feed(idx.self)
+	myReadableAddr := multilog.Addr("box2:") + storedrefs.Feed(idx.self)
 	myReadable, err := idx.private.LoadInternalBitmap(myReadableAddr)
 	if err != nil {
 		return fmt.Errorf("error getting my readable: %w", err)
@@ -153,17 +158,12 @@ func (idx *CombinedIndex) Box2Reindex(author refs.FeedRef) error {
 	for i := 0; i < fromAuthor.GetCardinality(); i++ {
 		rxSeq := int64(it.Next())
 
-		msgv, err := idx.rxlog.Get(rxSeq)
+		mm, err := idx.rxlog.Get(rxSeq)
 		if err != nil {
 			return err
 		}
 
-		msg, ok := msgv.(refs.Message)
-		if !ok {
-			return fmt.Errorf("not a message: %T", msgv)
-		}
-
-		err = idx.update(rxSeq, msg)
+		err = idx.update(rxSeq, mm)
 		if err != nil {
 			return err
 		}
@@ -172,42 +172,60 @@ func (idx *CombinedIndex) Box2Reindex(author refs.FeedRef) error {
 	return nil
 }
 
-// Pour calls the processing function to add a value to a sublog.
-func (idx *CombinedIndex) Pour(ctx context.Context, swv interface{}) error {
+// ProcessEntry processes a single log entry, updating all sublogs.
+func (idx *CombinedIndex) ProcessEntry(seq int64, mm *multimsg.MultiMessage) error {
 	idx.l.Lock()
 	defer idx.l.Unlock()
 
-	sw, ok := swv.(margaret.SeqWrapper)
-	if !ok {
-		return fmt.Errorf("error casting seq wrapper. got type %T", swv)
-	}
-	seq := int64(sw.Seq()) //received as
-
-	// todo: defer state save!?
+	// persist the current sequence number
 	err := persist.Save(idx.file, seq)
 	if err != nil {
 		return fmt.Errorf("error saving current sequence number: %w", err)
 	}
 
-	v := sw.Value()
-
-	if isNulled, ok := v.(error); ok {
-		if margaret.IsErrNulled(isNulled) {
-			return nil
-		}
-		return isNulled
+	if mm.Message == nil {
+		return nil // nulled entry
 	}
 
-	msg, ok := v.(refs.Message)
-	if !ok {
-		return fmt.Errorf("error casting message. got type %T", v)
-	}
-
-	return idx.update(seq, msg)
+	return idx.update(seq, mm)
 }
 
-// update all the indexes with this new message which was stored as rxSeq (received sequence number)
-func (idx *CombinedIndex) update(rxSeq int64, msg refs.Message) error {
+// LastProcessedSeq returns the sequence number of the last processed message.
+func (idx *CombinedIndex) LastProcessedSeq() int64 {
+	idx.l.Lock()
+	defer idx.l.Unlock()
+
+	var seq int64
+	if err := persist.Load(idx.file, &seq); err != nil {
+		if !errors.Is(err, io.EOF) {
+			return margaret.SeqEmpty
+		}
+		return margaret.SeqEmpty
+	}
+	return seq
+}
+
+// Index processes all unprocessed entries from the given log.
+func (idx *CombinedIndex) Index(log margaret.Log[*multimsg.MultiMessage]) error {
+	lastSeq := idx.LastProcessedSeq()
+
+	var opts []margaret.QueryOption
+	if lastSeq >= 0 {
+		opts = append(opts, margaret.Gt(lastSeq))
+	}
+
+	qry := log.Query(opts...)
+	for seq, mm := range qry.Iter() {
+		if err := idx.ProcessEntry(seq, mm); err != nil {
+			return err
+		}
+	}
+	return qry.Err()
+}
+
+// update all the indexes with this new message which was stored as rxSeq
+func (idx *CombinedIndex) update(rxSeq int64, mm *multimsg.MultiMessage) error {
+	msg := mm.Message
 
 	author := msg.Author()
 
@@ -216,8 +234,7 @@ func (idx *CombinedIndex) update(rxSeq int64, msg refs.Message) error {
 	if err != nil {
 		return fmt.Errorf("error opening sublog: %w", err)
 	}
-	_, err = authorLog.Append(rxSeq)
-	if err != nil {
+	if err := appendSeq(authorLog, rxSeq); err != nil {
 		return fmt.Errorf("error updating author sublog: %w", err)
 	}
 
@@ -238,7 +255,7 @@ func (idx *CombinedIndex) update(rxSeq int64, msg refs.Message) error {
 	content := msg.ContentBytes()
 	// TODO: gabby grove
 	if content[0] != '{' { // assuming all other content is json objects
-		cleartext, err := idx.tryDecrypt(msg, rxSeq)
+		cleartext, err := idx.tryDecrypt(mm, rxSeq)
 		if err != nil {
 			if err == errSkip {
 				// yes it's a boxed message but we can't read it (yet)
@@ -255,29 +272,19 @@ func (idx *CombinedIndex) update(rxSeq int64, msg refs.Message) error {
 		Type    string
 		Root    *refs.MessageRef
 		Tangles refs.Tangles
-		// Mentions [] TODO channels and mentions
 	}
 	err = json.Unmarshal(content, &jsonContent)
 	if err != nil {
-		// fmt.Errorf("ssb: combined idx failed to unmarshal json content of %s: %w", abstractMsg.Key().Ref(), err)
-		// returning an error in this pipeline stops the processing,
-		// i.e. broken messages stop all other indexing
+		// broken messages stop all other indexing if we return an error
 		// not much to do here but continue with the next
-		// these can be quite educational though (like root: bool)
-		//
-		// TODO: make a "forgiving" content type
-		// which silently ignores invalid root: or tangle fields.
-		// right now these don't end up in byType or tangles
 		return nil
 	}
 
 	typeStr := jsonContent.Type
 	if typeStr == "" {
-		// TODO: dont stop indexing on illegal messages
 		return nil
-		// return fmt.Errorf("ssb: untyped message")
 	}
-	typeIdxAddr := indexes.Addr("string:" + typeStr)
+	typeIdxAddr := multilog.Addr("string:" + typeStr)
 
 	// we need to keep the order intact for these
 	if typeStr == "group/add-member" {
@@ -285,8 +292,7 @@ func (idx *CombinedIndex) update(rxSeq int64, msg refs.Message) error {
 		if err != nil {
 			return err
 		}
-		_, err = sl.Append(rxSeq)
-		if err != nil {
+		if err := appendSeq(sl, rxSeq); err != nil {
 			return err
 		}
 	}
@@ -296,8 +302,7 @@ func (idx *CombinedIndex) update(rxSeq int64, msg refs.Message) error {
 		return fmt.Errorf("error opening sublog: %w", err)
 	}
 
-	_, err = typedLog.Append(rxSeq)
-	if err != nil {
+	if err := appendSeq(typedLog, rxSeq); err != nil {
 		return fmt.Errorf("error updating byType sublog: %w", err)
 	}
 
@@ -308,8 +313,7 @@ func (idx *CombinedIndex) update(rxSeq int64, msg refs.Message) error {
 		if err != nil {
 			return fmt.Errorf("error opening sublog: %w", err)
 		}
-		_, err = tangleLog.Append(rxSeq)
-		if err != nil {
+		if err := appendSeq(tangleLog, rxSeq); err != nil {
 			return fmt.Errorf("error updating v1 tangle sublog: %w", err)
 		}
 	}
@@ -326,8 +330,7 @@ func (idx *CombinedIndex) update(rxSeq int64, msg refs.Message) error {
 		if err != nil {
 			return fmt.Errorf("error opening sublog: %w", err)
 		}
-		_, err = tangleLog.Append(rxSeq)
-		if err != nil {
+		if err := appendSeq(tangleLog, rxSeq); err != nil {
 			return fmt.Errorf("error updating v2 tangle sublog: %w", err)
 		}
 	}
@@ -339,56 +342,33 @@ func (idx *CombinedIndex) Close() error {
 	return idx.file.Close()
 }
 
-// QuerySpec returns the query spec that queries the next needed messages from the log
-func (idx *CombinedIndex) QuerySpec() margaret.QuerySpec {
-	idx.l.Lock()
-	defer idx.l.Unlock()
-
-	var seq int64
-
-	if err := persist.Load(idx.file, &seq); err != nil {
-		if !errors.Is(err, io.EOF) {
-			return margaret.ErrorQuerySpec(err)
-		}
-
-		seq = margaret.SeqEmpty
-	}
-
-	return margaret.MergeQuerySpec(
-		margaret.Gt(seq),
-		margaret.SeqWrap(true),
-	)
-}
-
-func (idx *CombinedIndex) tryDecrypt(msg refs.Message, rxSeq int64) ([]byte, error) {
-	box1, box2, err := getBoxedContent(msg)
+func (idx *CombinedIndex) tryDecrypt(mm *multimsg.MultiMessage, rxSeq int64) ([]byte, error) {
+	msg := mm.Message
+	box1, box2, err := getBoxedContent(mm)
 	if err != nil {
-		// not super sure what the idea with the different skip errors was
-		// these are _broken_ content-wise both kinds _should be ignored
 		if err == errSkipBox1 || err == errSkipBox2 {
 			return nil, errSkip
 		}
-
 		return nil, err
 	}
 
 	var (
 		cleartext []byte
-		idxAddr   indexes.Addr
+		idxAddr   multilog.Addr
 	)
 
 	// as a help for re-indexing, keep track of all box1 and box2 messages.
 	if box1 != nil {
-		idxAddr = indexes.Addr("meta:box1")
+		idxAddr = multilog.Addr("meta:box1")
 	} else {
-		idxAddr = indexes.Addr("meta:box2")
+		idxAddr = multilog.Addr("meta:box2")
 	}
 
 	boxTyped, err := idx.private.Get(idxAddr)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := boxTyped.Append(rxSeq); err != nil {
+	if err := appendSeq(boxTyped, rxSeq); err != nil {
 		return nil, fmt.Errorf("private: error marking type:box: %w", err)
 	}
 
@@ -399,7 +379,7 @@ func (idx *CombinedIndex) tryDecrypt(msg refs.Message, rxSeq int64) ([]byte, err
 			return nil, errSkip
 		}
 
-		idxAddr = indexes.Addr("box1:") + storedrefs.Feed(idx.self)
+		idxAddr = multilog.Addr("box1:") + storedrefs.Feed(idx.self)
 		cleartext = content
 	} else if box2 != nil {
 		prev := refs.MessageRef{}
@@ -411,10 +391,7 @@ func (idx *CombinedIndex) tryDecrypt(msg refs.Message, rxSeq int64) ([]byte, err
 			return nil, errSkip
 		}
 
-		// instead by group root? could be PM... hmm
-		// would be nice to keep multi-keypair support here
-		// but might need to rethink the group manager
-		idxAddr = indexes.Addr("box2:") + storedrefs.Feed(idx.self)
+		idxAddr = multilog.Addr("box2:") + storedrefs.Feed(idx.self)
 		cleartext = content
 	} else {
 		return nil, fmt.Errorf("tryDecrypt: not skipped but also not valid content")
@@ -424,7 +401,7 @@ func (idx *CombinedIndex) tryDecrypt(msg refs.Message, rxSeq int64) ([]byte, err
 	if err != nil {
 		return nil, fmt.Errorf("combined/private: error opening priv sublog for: %w", err)
 	}
-	if _, err := userPrivs.Append(rxSeq); err != nil {
+	if err := appendSeq(userPrivs, rxSeq); err != nil {
 		return nil, fmt.Errorf("combined/private: error appending PM: %w", err)
 	}
 
@@ -437,10 +414,10 @@ var (
 	errSkipBox2 = fmt.Errorf("ssb: skip box2 message")
 )
 
-// returns either box1, box2 content or an error
+// getBoxedContent returns either box1, box2 content or an error.
 // if err == errSkip, this message couldn't be decrypted
-// everything else is a broken message (TODO: and should be... ignored?)
-func getBoxedContent(msg refs.Message) ([]byte, []byte, error) {
+func getBoxedContent(mm *multimsg.MultiMessage) ([]byte, []byte, error) {
+	msg := mm.Message
 	switch msg.Author().Algo() {
 
 	// on the _crappy_ format, we need to base64 decode the data
@@ -455,8 +432,6 @@ func getBoxedContent(msg refs.Message) ([]byte, []byte, error) {
 			boxedData := make([]byte, base64.StdEncoding.DecodedLen(len(input)-6))
 			n, err := base64.StdEncoding.Decode(boxedData, b64data)
 			if err != nil {
-				//err = errors.Wrap(err, "combined/private: invalid b64 encoding")
-				//level.Debug(pr.logger).Log("msg", "unboxLog b64 decode failed", "err", err)
 				return nil, nil, errSkipBox1
 			}
 			return boxedData[:n], nil, nil
@@ -465,8 +440,6 @@ func getBoxedContent(msg refs.Message) ([]byte, []byte, error) {
 			boxedData := make([]byte, base64.StdEncoding.DecodedLen(len(input)-7))
 			n, err := base64.StdEncoding.Decode(boxedData, b64data)
 			if err != nil {
-				err = fmt.Errorf("combined/private: invalid b64 encoding: %w", err)
-				//level.Debug(pr.logger).Log("msg", "unboxLog b64 decode failed", "err", err)
 				return nil, nil, errSkipBox1
 			}
 			return nil, boxedData[:n], nil
@@ -476,16 +449,6 @@ func getBoxedContent(msg refs.Message) ([]byte, []byte, error) {
 
 		// gg supports pure binary data
 	case refs.RefAlgoFeedGabby:
-		// TODO: use ContentBytes()?
-		mm, ok := msg.(multimsg.MultiMessage)
-		if !ok {
-			mmPtr, ok := msg.(*multimsg.MultiMessage)
-			if !ok {
-				err := fmt.Errorf("combined/private: error casting message. got type %T", msg)
-				return nil, nil, err
-			}
-			mm = *mmPtr
-		}
 		tr, ok := mm.AsGabby()
 		if !ok {
 			return nil, nil, fmt.Errorf("combined/private: error getting gabby msg")
@@ -520,5 +483,4 @@ func getBoxedContent(msg refs.Message) ([]byte, []byte, error) {
 		err := fmt.Errorf("combined/private: unknown feed type: %s", msg.Author().Algo())
 		return nil, nil, err
 	}
-
 }

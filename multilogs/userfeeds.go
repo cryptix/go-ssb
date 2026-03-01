@@ -5,15 +5,14 @@
 package multilogs
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"time"
 
-	refs "github.com/ssbc/go-ssb-refs"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
+
 	"github.com/ssbc/go-ssb/internal/storedrefs"
-	"github.com/ssbc/margaret"
-	"github.com/ssbc/margaret/multilog"
+	"github.com/ssbc/go-ssb/message/multimsg"
 )
 
 const IndexNameFeeds = "userFeeds"
@@ -25,7 +24,7 @@ func indexSyncStart() {
 }
 
 func indexSyncDone() {
-	time.AfterFunc(100 * time.Millisecond, func() {
+	time.AfterFunc(100*time.Millisecond, func() {
 		idxInSync.Done()
 	})
 }
@@ -35,31 +34,22 @@ func WaitUntilUserFeedIndexIsSynced() {
 	idxInSync.Wait()
 }
 
-func UserFeedsUpdate(ctx context.Context, seq int64, value interface{}, mlog multilog.MultiLog) error {
+func UserFeedsUpdate(seq int64, mm *multimsg.MultiMessage, mlog *roaring.MultiLog) error {
 	indexSyncStart()
 	defer indexSyncDone()
 
-	if nulled, ok := value.(error); ok {
-		if margaret.IsErrNulled(nulled) {
-			return nil
-		}
-		return nulled
+	if mm.Message == nil {
+		return nil // nulled entry
 	}
 
-	abstractMsg, ok := value.(refs.Message)
-	if !ok {
-		return fmt.Errorf("error casting message. got type %T", value)
-	}
-
-	author := abstractMsg.Author()
+	author := mm.Message.Author()
 
 	authorLog, err := mlog.Get(storedrefs.Feed(author))
 	if err != nil {
 		return fmt.Errorf("error opening sublog: %w", err)
 	}
 
-	_, err = authorLog.Append(seq)
-	if err != nil {
+	if err := appendSeq(authorLog, seq); err != nil {
 		return fmt.Errorf("error appending new author message: %w", err)
 	}
 	return nil
