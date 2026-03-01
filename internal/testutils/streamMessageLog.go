@@ -5,42 +5,33 @@
 package testutils
 
 import (
-	"context"
 	"encoding/hex"
 	"testing"
 
-	"github.com/ssbc/go-luigi"
-	"github.com/ssbc/margaret"
+	margaret "github.com/ssbc/margaret/v2"
 	"github.com/stretchr/testify/require"
 
 	refs "github.com/ssbc/go-ssb-refs"
+	"github.com/ssbc/go-ssb/message/multimsg"
 )
 
-func StreamLog(t *testing.T, l margaret.Log) {
+func StreamLog(t *testing.T, l margaret.Log[*multimsg.MultiMessage]) {
 	r := require.New(t)
-
-	src, err := l.Query()
-	r.NoError(err)
 
 	seq := l.Seq()
 	i := int64(0)
 
-	for {
-		v, err := src.Next(context.TODO())
-		if luigi.IsEOS(err) {
-			break
-		}
-
-		mm, ok := v.(refs.Message)
-		r.True(ok, "expected %T to be a refs.Message (wrong log type? missing indirection to receive log?)", v)
+	qry := l.Query()
+	for _, mm := range qry.Iter() {
+		var msg refs.Message = mm
 
 		t.Logf("log seq: %d - %s:%d (%s)",
 			i,
-			mm.Author().ShortSigil(),
-			mm.Seq(),
-			mm.Key().ShortSigil())
+			msg.Author().ShortSigil(),
+			msg.Seq(),
+			msg.Key().ShortSigil())
 
-		b := mm.ContentBytes()
+		b := msg.ContentBytes()
 		if n := len(b); n > 128 {
 			t.Log("truncating", n, " to last 32 bytes")
 			b = b[len(b)-32:]
@@ -49,6 +40,7 @@ func StreamLog(t *testing.T, l margaret.Log) {
 
 		i++
 	}
+	r.NoError(qry.Err())
 
 	// margaret is 0-indexed
 	seq += 1

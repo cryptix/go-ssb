@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ssbc/go-luigi"
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/stretchr/testify/require"
 	"go.mindeco.de/log"
@@ -23,7 +22,6 @@ import (
 	"github.com/ssbc/go-ssb/internal/mutil"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
 	"github.com/ssbc/go-ssb/internal/testutils"
-	"github.com/ssbc/go-ssb/message/multimsg"
 )
 
 func TestFeedsGabbySync(t *testing.T) {
@@ -80,21 +78,21 @@ func TestFeedsGabbySync(t *testing.T) {
 	ali.Replicate(bob.KeyPair.ID())
 	bob.Replicate(ali.KeyPair.ID())
 
-	seq, err := ali.PublishLog.Append(refs.NewContactFollow(bob.KeyPair.ID()))
+	aliMsg, err := ali.PublishLog.Publish(refs.NewContactFollow(bob.KeyPair.ID()))
 	r.NoError(err)
-	r.Equal(int64(0), seq)
+	r.Equal(int64(1), aliMsg.Seq())
 
-	seq, err = bob.PublishLog.Append(refs.NewContactFollow(ali.KeyPair.ID()))
+	bobMsg, err := bob.PublishLog.Publish(refs.NewContactFollow(ali.KeyPair.ID()))
 	r.NoError(err)
-	r.Equal(int64(0), seq)
+	r.Equal(int64(1), bobMsg.Seq())
 
 	for i := 0; i < 9; i++ {
-		seq, err := bob.PublishLog.Append(map[string]interface{}{
+		msg, err := bob.PublishLog.Publish(map[string]interface{}{
 			"type": "test",
 			"test": i,
 		})
 		r.NoError(err)
-		r.Equal(int64(i+1), seq)
+		r.Equal(int64(i+2), msg.Seq())
 	}
 
 	// sanity, check bob has his shit together
@@ -122,23 +120,15 @@ func TestFeedsGabbySync(t *testing.T) {
 
 	r.Equal(int64(9), bosLogAtAli.Seq())
 
-	src, err := mutil.Indirect(ali.ReceiveLog, bosLogAtAli).Query()
-	r.NoError(err)
-	for {
-		v, err := src.Next(ctx)
-		if luigi.IsEOS(err) {
-			break
-		} else if err != nil {
-			r.NoError(err)
-		}
-		msg, ok := v.(*multimsg.MultiMessage)
-		r.True(ok, "Type: %T", v)
+	qry := mutil.Indirect(ali.ReceiveLog, bosLogAtAli).Query()
+	for _, msg := range qry.Iter() {
 		// t.Log(msg)
 		_, ok = msg.AsGabby()
 		r.True(ok)
 		// a.True(msg.Author.ProtoChain)
 		// a.NotEmpty(msg.ProtoChain)
 	}
+	r.NoError(qry.Err())
 
 	cancel()
 	ali.Shutdown()

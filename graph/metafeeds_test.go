@@ -188,7 +188,10 @@ func (op PeopleOpMetafeedAddExisting) Op(state *testState) error {
 	if err != nil {
 		return err
 	}
-	mf.publish.Append(signedAddExistingContent)
+	_, err = mf.publish.Publish(signedAddExistingContent)
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -220,7 +223,7 @@ func (op PeopleOpAnnounceMetafeed) Op(state *testState) error {
 		return err
 	}
 
-	_, err = mainFeed.publish.Append(signedAnnouncement)
+	_, err = mainFeed.publish.Publish(signedAnnouncement)
 	if err != nil {
 		return err
 	}
@@ -255,7 +258,7 @@ func (op PeopleOpNewSubFeed) Op(state *testState) error {
 		return err
 	}
 
-	_, err = owningFeed.publish.Append(addMsg)
+	_, err = owningFeed.publish.Publish(addMsg)
 	if err != nil {
 		return err
 	}

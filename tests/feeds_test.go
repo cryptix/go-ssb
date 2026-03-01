@@ -70,10 +70,8 @@ func TestFeedFromJS(t *testing.T) {
 
 	var lastMsg string
 	for i := 0; i < n; i++ { // don't check the contact:following message from A to C
-		msg, err := mutil.Indirect(bob.ReceiveLog, aliceLog).Get(int64(i))
+		storedMsg, err := mutil.Indirect(bob.ReceiveLog, aliceLog).Get(int64(i))
 		r.NoError(err)
-		storedMsg, ok := msg.(refs.Message)
-		r.True(ok, "wrong type of message: %T", msg)
 		r.EqualValues(i+1, storedMsg.Seq())
 
 		type testWrap struct {
@@ -213,9 +211,9 @@ func TestFeedFromGoNotLive(t *testing.T) {
 		refs.NewAboutName(alice, "test alice"),
 	}
 	for i, msg := range tmsgs {
-		newSeq, err := s.PublishLog.Append(msg)
+		ref, err := s.PublishLog.Publish(msg)
 		r.NoError(err, "failed to publish test message %d", i)
-		r.NotNil(newSeq)
+		r.NotNil(ref)
 	}
 
 	<-ts.doneJS
@@ -230,10 +228,8 @@ func TestFeedFromGoNotLive(t *testing.T) {
 
 	aliceMsgs := mutil.Indirect(s.ReceiveLog, aliceIdx)
 
-	msg, err := aliceMsgs.Get(0)
+	storedMsg, err := aliceMsgs.Get(0)
 	r.NoError(err)
-	storedMsg, ok := msg.(refs.Message)
-	r.True(ok, "wrong type of message: %T", msg)
 	r.EqualValues(storedMsg.Seq(), 1, "expected first message")
 
 	s.Network.GetConnTracker().CloseAll()
@@ -251,10 +247,8 @@ func TestFeedFromGoNotLive(t *testing.T) {
 
 	aliceMsgs = mutil.Indirect(s.ReceiveLog, aliceIdx)
 
-	msg, err = aliceMsgs.Get(aliceMsgs.Seq())
+	storedMsg, err = aliceMsgs.Get(aliceMsgs.Seq())
 	r.NoError(err)
-	storedMsg, ok = msg.(refs.Message)
-	r.True(ok, "wrong type of message: %T", msg)
 	r.EqualValues(2, storedMsg.Seq(), "expected last message")
 
 	bobIndex, err := s.Users.Get(storedrefs.Feed(s.KeyPair.ID()))
@@ -273,10 +267,8 @@ func TestFeedFromGoNotLive(t *testing.T) {
 
 	r.EqualValues(3-1, bobMsgs.Seq(), "bob should have 3 message (0 indexed)")
 
-	msg, err = bobMsgs.Get(2)
+	storedMsg, err = bobMsgs.Get(2)
 	r.NoError(err)
-	storedMsg, ok = msg.(refs.Message)
-	r.True(ok, "wrong type of message: %T", msg)
 	r.EqualValues(3, storedMsg.Seq(), "expected msg 3 from bob")
 
 	err = s.FSCK(sbot.FSCKWithMode(sbot.FSCKModeSequences))
@@ -379,10 +371,8 @@ func TestFeedFromGoLive(t *testing.T) {
 
 	seqMsg, err := aliceLog.Get(1)
 	r.NoError(err)
-	msg, err := s.ReceiveLog.Get(seqMsg.(int64))
+	storedMsg, err := s.ReceiveLog.Get(int64(*seqMsg))
 	r.NoError(err)
-	storedMsg, ok := msg.(refs.Message)
-	r.True(ok, "wrong type of message: %T", msg)
 	r.EqualValues(2, storedMsg.Seq())
 
 	ts.wait()

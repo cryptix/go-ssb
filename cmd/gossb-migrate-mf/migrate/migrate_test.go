@@ -159,7 +159,7 @@ func populateTestLog(t *testing.T, bot *sbot.Sbot) {
 	}
 
 	for _, entry := range entries {
-		_, err = bot.PublishLog.Append(entry)
+		_, err = bot.PublishLog.Publish(entry)
 		r.NoError(err)
 	}
 }

@@ -6,9 +6,11 @@ package legacy
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -17,9 +19,33 @@ import (
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/ssbc/go-ssb"
 )
+
+// testKeyPair is a minimal keypair for tests that avoids importing the root go-ssb package (which would create an import cycle).
+type testKeyPair struct {
+	feed    refs.FeedRef
+	private *[ed25519.PrivateKeySize]byte
+}
+
+func (kp testKeyPair) ID() refs.FeedRef              { return kp.feed }
+func (kp testKeyPair) Secret() *[ed25519.PrivateKeySize]byte { return kp.private }
+
+func newTestKeyPair(r io.Reader) (testKeyPair, error) {
+	if r == nil {
+		r = rand.Reader
+	}
+	pubKey, privKey, err := ed25519.GenerateKey(r)
+	if err != nil {
+		return testKeyPair{}, err
+	}
+	feed, err := refs.NewFeedRefFromBytes(pubKey, refs.RefAlgoFeedSSB1)
+	if err != nil {
+		return testKeyPair{}, err
+	}
+	var sec [ed25519.PrivateKeySize]byte
+	copy(sec[:], privKey)
+	return testKeyPair{feed: feed, private: &sec}, nil
+}
 
 func TestSignatureVerify(t *testing.T) {
 	a, r := assert.New(t), require.New(t)
@@ -51,7 +77,7 @@ func TestCompatHMACVerify(t *testing.T) {
 	r := require.New(t)
 	seed := makeRandBytes(t, 32)
 
-	kp, err := ssb.NewKeyPair(bytes.NewReader(seed), refs.RefAlgoFeedSSB1)
+	kp, err := newTestKeyPair(bytes.NewReader(seed))
 	r.NoError(err)
 
 	hmacKey := makeRandBytes(t, 32)
@@ -88,7 +114,7 @@ func TestCompatHMACSign(t *testing.T) {
 	r := require.New(t)
 	seed := makeRandBytes(t, 32)
 
-	kp, err := ssb.NewKeyPair(bytes.NewReader(seed), refs.RefAlgoFeedSSB1)
+	kp, err := newTestKeyPair(bytes.NewReader(seed))
 	r.NoError(err)
 
 	hmacKey := makeRandBytes(t, 32)
@@ -143,7 +169,7 @@ func TestCompatVerify(t *testing.T) {
 	r := require.New(t)
 	seed := makeRandBytes(t, 32)
 
-	kp, err := ssb.NewKeyPair(bytes.NewReader(seed), refs.RefAlgoFeedSSB1)
+	kp, err := newTestKeyPair(bytes.NewReader(seed))
 	r.NoError(err)
 
 	// TODO: be more creative with test data
@@ -175,7 +201,7 @@ func TestCompatSignature(t *testing.T) {
 	r := require.New(t)
 	seed := makeRandBytes(t, 32)
 
-	kp, err := ssb.NewKeyPair(bytes.NewReader(seed), refs.RefAlgoFeedSSB1)
+	kp, err := newTestKeyPair(bytes.NewReader(seed))
 	r.NoError(err)
 
 	// TODO: be more creative with test data

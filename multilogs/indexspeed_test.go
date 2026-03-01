@@ -5,7 +5,6 @@
 package multilogs
 
 import (
-	"context"
 	"encoding/json"
 	"log"
 	"math/rand"
@@ -15,14 +14,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ssbc/go-luigi"
-	"github.com/ssbc/margaret"
-	librarian "github.com/ssbc/margaret/indexes"
-	"github.com/ssbc/margaret/multilog"
+	margaret "github.com/ssbc/margaret/v2"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb-refs/tfk"
 	"github.com/ssbc/go-ssb/repo"
 )
@@ -57,19 +53,21 @@ func BenchmarkIndexFixturesUserFeeds(b *testing.B) {
 	name := "benchidx"
 
 	for n := 0; n < b.N; n++ {
-
 		b.StopTimer()
-		_, snk, err := repo.OpenFileSystemMultiLog(tr, name, UserFeedsUpdate) // fs-bitmaps
+		mlog, err := repo.OpenFileSystemMultiLog(tr, name)
 		r.NoError(err)
 		b.StartTimer()
 
-		src, err := testLog.Query(snk.QuerySpec())
-		r.NoError(err)
+		// index all entries
+		qry := testLog.Query()
+		for seq, mm := range qry.Iter() {
+			err := UserFeedsUpdate(seq, mm, mlog)
+			r.NoError(err)
+		}
+		r.NoError(qry.Err())
 
-		err = luigi.Pump(context.TODO(), snk, src)
-		r.NoError(err)
 		b.StopTimer()
-		snk.Close()
+		mlog.Close()
 		os.RemoveAll(tr.GetPath(repo.PrefixMultiLog, name))
 	}
 }
@@ -115,27 +113,56 @@ func TestIndexFixtures(t *testing.T) {
 		return
 	}
 
-	// helper functions
-
-	serve := func(idx string, snk librarian.SinkIndex) {
-		src, err := testLog.Query(snk.QuerySpec())
-		r.NoError(err)
-
+	// helper: index all entries in testLog into the given multilog
+	indexAll := func(idx string, mlog *roaring.MultiLog) {
 		start := time.Now()
-		err = luigi.Pump(context.TODO(), snk, src)
-		r.NoError(err)
+		qry := testLog.Query()
+		for seq, mm := range qry.Iter() {
+			err := UserFeedsUpdate(seq, mm, mlog)
+			r.NoError(err)
+		}
+		r.NoError(qry.Err())
 		t.Log("log", t.Name(), "index", idx, "took", time.Since(start))
 	}
 
-	// f, err := os.Create("/tmp/lengthfile")
-	// r.NoError(err)
+	compare := func(ml *roaring.MultiLog) {
+		addrs, err := ml.List()
+		r.NoError(err)
+		a.Equal(len(tc.HeadCount), len(addrs))
+
+		for i, addr := range addrs {
+			var sr tfk.Feed
+			err := sr.UnmarshalBinary([]byte(addr))
+			r.NoError(err, "ref %d invalid", i)
+
+			sublog, err := ml.Get(addr)
+			r.NoError(err)
+
+			sublogSeq := sublog.Seq()
+
+			fr, err := sr.Feed()
+			r.NoError(err)
+
+			seq, has := tc.HeadCount[fr.String()]
+			if !a.True(has, "feed not found:%s", fr) {
+				continue
+			}
+
+			if a.True(has, "ref %s not in set (has:%d)", fr, sublogSeq) {
+				a.EqualValues(seq, sublogSeq,
+					"%s: sublog %s has wrong number of messages", tc.Name, fr)
+			}
+		}
+		r.NoError(ml.Close())
+	}
 
 	if outputList {
 		// write out a list of authors and exit
 		authors := make(map[string]int64)
 
 		ml, combinedSnk, closer := setupCombinedIndex(t, testLog, makeFsMlog)
-		serve("combined", combinedSnk)
+		err = combinedSnk.Index(testLog)
+		r.NoError(err)
 
 		addrs, err := ml.List()
 		r.NoError(err)
@@ -167,50 +194,14 @@ func TestIndexFixtures(t *testing.T) {
 		return
 	}
 
-	compare := func(ml multilog.MultiLog) {
-		addrs, err := ml.List()
-		r.NoError(err)
-		a.Equal(len(tc.HeadCount), len(addrs))
-
-		for i, addr := range addrs {
-			var sr tfk.Feed
-			err := sr.UnmarshalBinary([]byte(addr))
-			r.NoError(err, "ref %d invalid", i)
-
-			sublog, err := ml.Get(addr)
-			r.NoError(err)
-
-			sublogSeq := sublog.Seq()
-
-			fr, err := sr.Feed()
-			r.NoError(err)
-
-			seq, has := tc.HeadCount[fr.String()]
-			if !a.True(has, "feed not found:%s", fr) {
-				// fmt.Fprintf(f, "%q:%d,\n", fr, sublogSeq)
-				continue
-			}
-
-			if a.True(has, "ref %s not in set (has:%d)", fr, sublogSeq) {
-				a.EqualValues(seq, sublogSeq,
-					"%s: sublog %s has wrong number of messages", tc.Name, fr)
-			}
-		}
-		r.NoError(ml.Close())
-	}
-
-	mkvMlog, snk, err := repo.OpenStandaloneMultiLog(tr, "testbadger"+tc.Name, UserFeedsUpdate)
+	fsMlog, err := repo.OpenFileSystemMultiLog(tr, "testfs"+tc.Name)
 	r.NoError(err)
-	serve("badger", snk)
-	compare(mkvMlog)
-
-	fsMlog, snk, err := repo.OpenFileSystemMultiLog(tr, "testfs"+tc.Name, UserFeedsUpdate)
-	r.NoError(err)
-	serve("fs-bitmap", snk)
+	indexAll("fs-bitmap", fsMlog)
 	compare(fsMlog)
 
 	userMlog, combinedSnk, closer := setupCombinedIndex(t, testLog, makeFsMlog)
-	serve("combined", combinedSnk)
+	err = combinedSnk.Index(testLog)
+	r.NoError(err)
 	compare(userMlog)
 	r.NoError(closer.Close())
 }
@@ -218,27 +209,18 @@ func TestIndexFixtures(t *testing.T) {
 func benchSequential(i int) func(b *testing.B) {
 	return func(b *testing.B) {
 		r := require.New(b)
-		ctx := context.TODO()
 
 		testRepo := repo.New(filepath.Join("testrun", "TestIndexFixture"))
 		testLog, err := repo.OpenLog(testRepo)
 		r.NoError(err)
 
-		src, err := testLog.Query(margaret.Limit(i))
-
 		b.ResetTimer()
 		for n := 0; n < b.N; n++ {
-		readLoop:
-			for {
-				v, err := src.Next(ctx)
-				if luigi.IsEOS(err) {
-					break readLoop
-				} else {
-					r.NoError(err)
-				}
-				_, ok := v.(refs.Message)
-				r.True(ok)
+			qry := testLog.Query(margaret.Limit(i))
+			for _, msg := range qry.Iter() {
+				r.NotNil(msg)
 			}
+			r.NoError(qry.Err())
 		}
 	}
 }
@@ -263,20 +245,15 @@ func benchRandom(i int) func(b *testing.B) {
 		var seqs []int64
 		for j := i; j > 0; j-- {
 			seqs = append(seqs, rand.Int63n(logLen))
-
 		}
 
 		b.ResetTimer()
 		for n := 0; n < b.N; n++ {
 			for _, seq := range seqs {
-				v, err := testLog.Get(seq)
+				msg, err := testLog.Get(seq)
 				r.NoError(err)
-				_, ok := v.(refs.Message)
-				r.True(ok)
-				// r.NotNil(msg.Key())
-				// r.NotNil(msg.Author())
+				r.NotNil(msg)
 			}
-
 		}
 	}
 }

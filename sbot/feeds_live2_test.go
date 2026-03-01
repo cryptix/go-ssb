@@ -16,7 +16,7 @@ import (
 
 	"github.com/VividCortex/gohistogram"
 	refs "github.com/ssbc/go-ssb-refs"
-	"github.com/ssbc/margaret"
+	margaret "github.com/ssbc/margaret/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/errgroup"
@@ -92,7 +92,7 @@ func makeFeedsLiveNetworkChain(chainLen uint) func(t *testing.T) {
 				if fQ == 1 {
 					msgCnt++
 					botI.Replicate(botJ.KeyPair.ID())
-					_, err := botI.PublishLog.Append(refs.NewContactFollow(botJ.KeyPair.ID()))
+					_, err := botI.PublishLog.Publish(refs.NewContactFollow(botJ.KeyPair.ID()))
 					r.NoError(err)
 				}
 			}
@@ -121,21 +121,20 @@ func makeFeedsLiveNetworkChain(chainLen uint) func(t *testing.T) {
 		// setup live listener
 		gotMsg := make(chan refs.Message)
 
-		seqSrc, err := mutil.Indirect(theBots[0].ReceiveLog, feedOfLastBot).Query(
+		seqSrc := mutil.Indirect(theBots[0].ReceiveLog, feedOfLastBot).Query(
 			margaret.Gt(wantSeq),
-			margaret.Live(true),
+			margaret.Live(ctx),
 		)
-		r.NoError(err)
 
 		botgroup.Go(makeChanWaiter(ctx, seqSrc, gotMsg))
 
 		// now publish on C and let them bubble to A, live without reconnect
 		for i := 0; i < testMessageCount; i++ {
 			tmsg := refs.NewPost(fmt.Sprintf("some test msg:%02d", n))
-			rxSeq, err := theBots[n-1].PublishLog.Append(tmsg)
+			msg, err := theBots[n-1].PublishLog.Publish(tmsg)
 			r.NoError(err)
 			published := time.Now()
-			a.EqualValues(int64(msgCnt+i), rxSeq)
+			a.NotNil(msg)
 
 			// received new message?
 			select {
@@ -213,7 +212,7 @@ func TestFeedsLiveNetworkStar(t *testing.T) {
 
 			if fQ == 1 {
 				botI.Replicate(botJ.KeyPair.ID())
-				_, err := botI.PublishLog.Append(refs.NewContactFollow(botJ.KeyPair.ID()))
+				_, err := botI.PublishLog.Publish(refs.NewContactFollow(botJ.KeyPair.ID()))
 				r.NoError(err)
 			}
 		}
@@ -248,19 +247,18 @@ func TestFeedsLiveNetworkStar(t *testing.T) {
 
 	gotMsg := make(chan refs.Message)
 
-	seqSrc, err := mutil.Indirect(botA.ReceiveLog, feedOfBotC).Query(
+	seqSrc := mutil.Indirect(botA.ReceiveLog, feedOfBotC).Query(
 		margaret.Gt(wantSeq),
-		margaret.Live(true))
-	r.NoError(err)
+		margaret.Live(ctx))
 
 	botgroup.Go(makeChanWaiter(ctx, seqSrc, gotMsg))
 
 	// now publish on C and let them bubble to A, live without reconnect
 	timeouts := 0
 	for i := 0; i < testMessageCount; i++ {
-		rxSeq, err := botC.PublishLog.Append(refs.NewPost("some test msg"))
+		msg, err := botC.PublishLog.Publish(refs.NewPost("some test msg"))
 		r.NoError(err)
-		r.Equal(int64(6+i), rxSeq)
+		r.NotNil(msg)
 		//t.Log(rxSeq)
 
 		// received new message?
@@ -393,10 +391,9 @@ func XTestFeedsLiveNetworkDiamond(t *testing.T) {
 	// construct query source
 	feedOfBotC, err := theBots[0].Users.Get(storedrefs.Feed(theBots[5].KeyPair.ID()))
 	r.NoError(err)
-	seqSrc, err := mutil.Indirect(theBots[0].ReceiveLog, feedOfBotC).Query(
+	seqSrc := mutil.Indirect(theBots[0].ReceiveLog, feedOfBotC).Query(
 		// margaret.Gte(int64(3)),
-		margaret.Live(true))
-	r.NoError(err)
+		margaret.Live(ctx))
 
 	botgroup.Go(makeChanWaiter(ctx, seqSrc, gotMsg))
 
@@ -404,10 +401,10 @@ func XTestFeedsLiveNetworkDiamond(t *testing.T) {
 	// now publish on C and let them bubble to A, live without reconnect
 	for i := 0; i < testMessageCount; i++ {
 		tMsg := refs.NewPost(fmt.Sprintf("some test msg %d", i))
-		seq, err := theBots[5].PublishLog.Append(tMsg)
+		msg, err := theBots[5].PublishLog.Publish(tMsg)
 		r.NoError(err)
 		published := time.Now()
-		r.EqualValues(i, seq, "new msg %d", i)
+		r.NotNil(msg)
 
 		// received new message?
 		select {

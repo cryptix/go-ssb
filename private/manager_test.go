@@ -8,12 +8,13 @@ import (
 	"math/rand"
 	"testing"
 
+	"os"
+	"path/filepath"
+
+	"github.com/dgraph-io/badger/v3"
 	"github.com/keks/testops"
-	librarian "github.com/ssbc/margaret/indexes"
-	libmkv "github.com/ssbc/margaret/indexes/mkv"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/nacl/box"
-	"modernc.org/kv"
 
 	"github.com/ssbc/go-ssb"
 	refs "github.com/ssbc/go-ssb-refs"
@@ -22,9 +23,15 @@ import (
 )
 
 func TestManager(t *testing.T) {
-	ks := &keys.Store{
-		Index: newMemIndex(keys.Recipients{}),
-	}
+	tDir := filepath.Join("testrun", t.Name())
+	os.RemoveAll(tDir)
+	os.MkdirAll(tDir, 0700)
+
+	db, err := badger.Open(badger.DefaultOptions(tDir).WithLogger(nil))
+	require.NoError(t, err)
+	t.Cleanup(func() { db.Close() })
+
+	ks := keys.NewStore(db, []byte("test"))
 
 	type testcase struct {
 		name   string
@@ -105,16 +112,6 @@ func TestManager(t *testing.T) {
 			},
 		},
 	}, tcs2)
-}
-
-func newMemIndex(tipe interface{}) librarian.SeqSetterIndex {
-	db, err := kv.CreateMem(&kv.Options{})
-	if err != nil {
-		// this is for testing only and unlikely to fail
-		panic(err)
-	}
-
-	return libmkv.NewIndex(db, tipe)
 }
 
 type testIdentity struct {

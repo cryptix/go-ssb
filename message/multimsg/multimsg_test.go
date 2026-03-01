@@ -6,23 +6,32 @@ package multimsg
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"encoding/hex"
+	"io"
 	"testing"
 
 	gabbygrove "github.com/ssbc/go-gabbygrove"
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/stretchr/testify/require"
 
-	"github.com/ssbc/go-ssb"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
 	"github.com/ssbc/go-ssb/message/legacy"
 )
+
+func newTestKeyPair(r io.Reader, algo refs.RefAlgo) (refs.FeedRef, error) {
+	pubKey, _, err := ed25519.GenerateKey(r)
+	if err != nil {
+		return refs.FeedRef{}, err
+	}
+	return refs.NewFeedRefFromBytes(pubKey, algo)
+}
 
 func TestMultiMsgLegacy(t *testing.T) {
 	r := require.New(t)
 
 	kpSeed := bytes.Repeat([]byte("feed"), 8)
-	kp, err := ssb.NewKeyPair(bytes.NewReader(kpSeed), refs.RefAlgoFeedSSB1)
+	feedRef, err := newTestKeyPair(bytes.NewReader(kpSeed), refs.RefAlgoFeedSSB1)
 	r.NoError(err)
 
 	msgKey, err := refs.NewMessageRefFromBytes(bytes.Repeat([]byte("acab"), 8), refs.RefAlgoMessageSSB1)
@@ -31,7 +40,7 @@ func TestMultiMsgLegacy(t *testing.T) {
 	// craft legacy testmessage
 	testContent := []byte(`{Hello: world}`)
 	var lm legacy.StoredMessage
-	lm.Author_ = storedrefs.SerialzedFeed{kp.ID()}
+	lm.Author_ = storedrefs.SerialzedFeed{feedRef}
 	lm.Sequence_ = 123
 	lm.Key_ = storedrefs.SerialzedMessage{msgKey}
 	lm.Raw_ = testContent
@@ -63,10 +72,10 @@ func TestMultiMsgGabby(t *testing.T) {
 	r := require.New(t)
 
 	kpSeed := bytes.Repeat([]byte("bee4"), 8)
-	kp, err := ssb.NewKeyPair(bytes.NewReader(kpSeed), refs.RefAlgoMessageGabby)
+	feedRef, err := newTestKeyPair(bytes.NewReader(kpSeed), refs.RefAlgoFeedGabby)
 	r.NoError(err)
 
-	authorRef, err := gabbygrove.NewBinaryRef(kp.ID())
+	authorRef, err := gabbygrove.NewBinaryRef(feedRef)
 	r.NoError(err)
 
 	cref, err := gabbygrove.NewContentRefFromBytes(kpSeed)
