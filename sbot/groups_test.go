@@ -202,8 +202,8 @@ func TestPrivateGroupsManualDecrypt(t *testing.T) {
 	t.Log("decrypted reply:", string(replyContent))
 
 	// indexed?
-	chkCount := func(ml *roaring.MultiLog) func(addr indexes.Addr, cnt int) {
-		return func(addr indexes.Addr, cnt int) {
+	chkCount := func(ml *roaring.MultiLog) func(addr multilog.Addr, cnt int) {
+		return func(addr multilog.Addr, cnt int) {
 			posts, err := ml.Get(addr)
 			r.NoError(err)
 
@@ -257,8 +257,8 @@ func XTestGroupsReindex(t *testing.T) {
 	r := require.New(t)
 
 	// indexed? asserter
-	chkCount := func(ml *roaring.MultiLog) func(tipe indexes.Addr, cnt int) {
-		return func(tipe indexes.Addr, cnt int) {
+	chkCount := func(ml *roaring.MultiLog) func(tipe multilog.Addr, cnt int) {
+		return func(tipe multilog.Addr, cnt int) {
 			posts, err := ml.Get(tipe)
 			r.NoError(err)
 

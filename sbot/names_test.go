@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ssbc/margaret"
+	// margaret v2 used via direct Seq() calls
 	"github.com/stretchr/testify/require"
 	"go.mindeco.de/log"
 
@@ -87,12 +87,7 @@ func TestNames(t *testing.T) {
 		r.NotNil(ref)
 	}
 
-	// assert helper
-	checkLogSeq := func(l margaret.Log, seq int) {
-		r.EqualValues(seq, l.Seq())
-	}
-
-	checkLogSeq(mainbot.ReceiveLog, len(intros)-1) // got all the messages
+	r.EqualValues(len(intros)-1, mainbot.ReceiveLog.Seq()) // got all the messages
 
 	// flush indexes
 	mainbot.WaitUntilIndexesAreSynced()

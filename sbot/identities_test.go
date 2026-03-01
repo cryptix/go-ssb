@@ -5,16 +5,13 @@
 package sbot
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/ssbc/go-luigi"
 	refs "github.com/ssbc/go-ssb-refs"
-	"github.com/ssbc/margaret"
 	"github.com/stretchr/testify/require"
 	"go.mindeco.de/log"
 
@@ -111,25 +108,10 @@ func XTestMultipleIdentities(t *testing.T) {
 		r.True(msg.Author().Equal(n2kp[intro.as].ID()))
 	}
 
-	// assert helper
-	checkLogSeq := func(l margaret.Log, seq int) {
-		r.EqualValues(seq, l.Seq())
-	}
+	r.EqualValues(len(intros)-1, mainbot.ReceiveLog.Seq()) // got all the messages
 
-	checkLogSeq(mainbot.ReceiveLog, len(intros)-1) // got all the messages
-
-	src, err := mainbot.ReceiveLog.Query()
-	r.NoError(err)
-
-	ctx := context.Background()
-	for {
-		v, err := src.Next(ctx)
-		if luigi.IsEOS(err) {
-			break
-		}
-		r.NoError(err)
-		msg, ok := v.(refs.Message)
-		r.True(ok, "wrong type: %T", v)
+	qry := mainbot.ReceiveLog.Query()
+	for _, msg := range qry.Iter() {
 		r.NotNil(msg)
 
 		var emptyv interface{}
@@ -137,6 +119,7 @@ func XTestMultipleIdentities(t *testing.T) {
 		r.NoError(err)
 		// spew.Dump(emptyv)
 	}
+	r.NoError(qry.Err())
 
 	// individual PMs got delivered
 	pl, ok := mainbot.GetMultiLog("privLogs")
@@ -150,9 +133,9 @@ func XTestMultipleIdentities(t *testing.T) {
 	r.NoError(err)
 
 	// 0 indexed
-	checkLogSeq(arnies, 0) // just to her self
-	checkLogSeq(berts, 3)  // self + hello + reply + from arny
-	checkLogSeq(cloes, 3)  // self + hello + reply + from arny
+	r.EqualValues(0, arnies.Seq()) // just to her self
+	r.EqualValues(3, berts.Seq())  // self + hello + reply + from arny
+	r.EqualValues(3, cloes.Seq())  // self + hello + reply + from arny
 
 	mainbot.Shutdown()
 	r.NoError(mainbot.Close())

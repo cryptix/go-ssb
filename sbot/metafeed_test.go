@@ -23,7 +23,8 @@ import (
 	"github.com/ssbc/go-ssb/internal/storedrefs"
 	"github.com/ssbc/go-ssb/internal/testutils"
 	"github.com/ssbc/go-ssb/repo"
-	"github.com/ssbc/margaret"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
+	margaret "github.com/ssbc/margaret/v2"
 	"github.com/stretchr/testify/require"
 	"go.mindeco.de/log"
 	"golang.org/x/sync/errgroup"
@@ -73,10 +74,10 @@ func TestMetafeedManagment(t *testing.T) {
 		rxSeq, err := storedMetafeed.Get(int64(want))
 		r.NoError(err)
 
-		mv, err := mainbot.ReceiveLog.Get(rxSeq.(int64))
+		mv, err := mainbot.ReceiveLog.Get(int64(*rxSeq))
 		r.NoError(err)
 
-		return mv.(refs.Message)
+		return mv
 	}
 
 	checkSeq(int(margaret.SeqEmpty))
@@ -251,13 +252,16 @@ func TestMetafeedSync(t *testing.T) {
 
 	// wait for all messages to arrive
 	wantCount := int64(2*n + 2 + 2 - 1) // 2*n test messages on the subfeeds, 2 announcments on the metafeed and two contact messages to befriend the bots
-	src, err := receiveBot.ReceiveLog.Query(margaret.Gte(wantCount), margaret.Live(true))
-	r.NoError(err)
-	ctx, tsCancel := context.WithTimeout(ctx, 5*time.Second)
+	liveCtx, tsCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer tsCancel()
-	v, err := src.Next(ctx)
-	r.NoError(err)
-	t.Log(v.(refs.Message).Key().String())
+	liveQry := receiveBot.ReceiveLog.Query(margaret.Gte(wantCount), margaret.Live(liveCtx))
+	for _, v := range liveQry.Iter() {
+		t.Log(v.Key().String())
+		break
+	}
+	if err := liveQry.Err(); err != nil && err != context.DeadlineExceeded {
+		r.NoError(err)
+	}
 
 	// shutdown
 	botShutdown()
@@ -379,8 +383,8 @@ func TestMetafeedIndexes(t *testing.T) {
 
 	// takes a log and a sequence number, massages the sequence number into the format used by the log provider & asserts
 	// that the log is at the queried sequence number
-	var createCheckSeq = func(bot *Sbot) func(feed margaret.Log, want int) refs.Message {
-		return func(feed margaret.Log, want int) refs.Message {
+	var createCheckSeq = func(bot *Sbot) func(feed margaret.Log[*roaring.Seq], want int) refs.Message {
+		return func(feed margaret.Log[*roaring.Seq], want int) refs.Message {
 			if want == -1 {
 				return nil
 			}
@@ -391,37 +395,33 @@ func TestMetafeedIndexes(t *testing.T) {
 			rxSeq, err := feed.Get(int64(want))
 			r.NoError(err)
 
-			// mv == message value (because of the empty interface assert)
-			mv, err := bot.ReceiveLog.Get(rxSeq.(int64))
+			mv, err := bot.ReceiveLog.Get(int64(*rxSeq))
 			r.NoError(err)
 
-			return mv.(refs.Message)
+			return mv
 		}
 	}
 	// util funcs
 	var checkSeq = createCheckSeq(bot)
 
 	// get a feed from a running sbot using only the id && assert that it worked
-	var createGetFeed = func(bot *Sbot) func(feedId refs.FeedRef) margaret.Log {
-		return func(feedId refs.FeedRef) margaret.Log {
+	var createGetFeed = func(bot *Sbot) func(feedId refs.FeedRef) margaret.Log[*roaring.Seq] {
+		return func(feedId refs.FeedRef) margaret.Log[*roaring.Seq] {
 			feed, err := bot.Users.Get(storedrefs.Feed(feedId))
 			r.NoError(err)
 			return feed
 		}
 	}
 
-	var fetchMessageBySeq = func(bot *Sbot) func(log margaret.Log, seq int64) refs.Message {
-		return func(idx margaret.Log, seq int64) refs.Message {
+	var fetchMessageBySeq = func(bot *Sbot) func(log margaret.Log[*roaring.Seq], seq int64) refs.Message {
+		return func(idx margaret.Log[*roaring.Seq], seq int64) refs.Message {
 
 			msgLog := mutil.Indirect(bot.ReceiveLog, idx)
 
 			v, err := msgLog.Get(seq)
 			r.NoError(err)
 
-			// unbox and make sure it's the right format
-			msg, ok := v.(refs.Message)
-			r.True(ok, "%T is not a message", v)
-			return msg
+			return v
 		}
 	}
 

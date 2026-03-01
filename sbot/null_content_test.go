@@ -15,9 +15,7 @@ import (
 	"time"
 
 	"github.com/davecgh/go-spew/spew"
-	"github.com/ssbc/go-luigi"
 	refs "github.com/ssbc/go-ssb-refs"
-	"github.com/ssbc/margaret"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mindeco.de/log"
@@ -99,11 +97,6 @@ func XTestNullContentRequest(t *testing.T) {
 		allMessages = append(allMessages, msg.Key())
 	}
 
-	// assert helper
-	checkLogSeq := func(l margaret.Log, seq int) {
-		r.EqualValues(seq, l.Seq())
-	}
-
 	checkUserLogSeq := func(bot *Sbot, name string, seq int) {
 		kp, has := n2kp[name]
 		r.True(has, "%s not in map", name)
@@ -114,10 +107,10 @@ func XTestNullContentRequest(t *testing.T) {
 		l, err := uf.Get(storedrefs.Feed(kp.ID()))
 		r.NoError(err)
 
-		checkLogSeq(l, seq)
+		r.EqualValues(seq, l.Seq())
 	}
 
-	checkLogSeq(mainbot.ReceiveLog, len(intros)-1) // got all the messages
+	r.EqualValues(len(intros)-1, mainbot.ReceiveLog.Seq()) // got all the messages
 
 	// check before drop
 	checkUserLogSeq(mainbot, "arny", 2)
@@ -128,22 +121,20 @@ func XTestNullContentRequest(t *testing.T) {
 	r.True(ok, "userFeeds mlog not present")
 
 	// try to request on arnies feed fails because the formt doesn't support it
-	arniesLog, err := uf.Get(storedrefs.Feed(kpArny.ID()))
+	arniesSeqLog, err := uf.Get(storedrefs.Feed(kpArny.ID()))
 	r.NoError(err)
 
-	arniesLog = mutil.Indirect(mainbot.ReceiveLog, arniesLog)
+	arniesLog := mutil.Indirect(mainbot.ReceiveLog, arniesSeqLog)
 	dcr := ssb.NewDropContentRequest(1, allMessages[0])
 	r.False(dcr.Valid(arniesLog))
 
 	// bert is in gg format so it works
-	bertLog, err := uf.Get(storedrefs.Feed(kpBert.ID()))
+	bertSeqLog, err := uf.Get(storedrefs.Feed(kpBert.ID()))
 	r.NoError(err)
 
-	bertLog = mutil.Indirect(mainbot.ReceiveLog, bertLog)
-	msgv, err := bertLog.Get(int64(2)) // 0-indexed
+	bertLog := mutil.Indirect(mainbot.ReceiveLog, bertSeqLog)
+	msg, err := bertLog.Get(int64(2)) // 0-indexed
 	r.NoError(err)
-	msg, ok := msgv.(refs.Message)
-	r.True(ok, "not a msg! %T", msgv)
 
 	r.True(msg.Author().Equal(kpBert.ID()), "wrong author")
 	r.True(bytes.Contains(msg.ContentBytes(), []byte(`"delete":`)), "wrong message")
@@ -277,11 +268,8 @@ func XTestNullContentAndSync(t *testing.T) {
 		userLog, err := uf.Get(storedrefs.Feed(kp.ID()))
 		r.NoError(err)
 
-		msgv, err := mutil.Indirect(bot.ReceiveLog, userLog).Get(int64(seq - 1)) // 0-indexed
+		msg, err := mutil.Indirect(bot.ReceiveLog, userLog).Get(int64(seq - 1)) // 0-indexed
 		r.NoError(err)
-
-		msg, ok := msgv.(refs.Message)
-		r.True(ok, "not a msg! %T", msgv)
 
 		if isNulled {
 			c := msg.ContentBytes()
@@ -376,24 +364,11 @@ func XTestNullContentAndSync(t *testing.T) {
 	checkMessageNulled(otherBot, "bert", 4, true)
 
 	// print all the messages
-	printSink := luigi.FuncSink(func(ctx context.Context, v interface{}, err error) error {
-		if err != nil {
-			logger.Log("err", err)
-			return err
-		}
-
-		sw, ok := v.(margaret.SeqWrapper)
-		r.True(ok, "not a SW! %T", v)
-
-		msg, ok := sw.Value().(refs.Message)
-		r.True(ok, "not a msg! %T", sw)
-
-		t.Log(sw.Seq(), string(msg.ContentBytes()))
-		return err
-	})
-	src, err := otherBot.ReceiveLog.Query(margaret.SeqWrap(true))
-	r.NoError(err)
-	luigi.Pump(context.Background(), printSink, src)
+	qry := otherBot.ReceiveLog.Query()
+	for seq, msg := range qry.Iter() {
+		t.Log(seq, string(msg.ContentBytes()))
+	}
+	r.NoError(qry.Err())
 
 	mainbot.Shutdown()
 	otherBot.Shutdown()

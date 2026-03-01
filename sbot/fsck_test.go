@@ -124,7 +124,7 @@ func testFSCKdouble(t *testing.T) {
 	}
 
 	// check we get the expected errors
-	err = theBot.FSCK(FSCKWithMode(FSCKModeLength))
+	err := theBot.FSCK(FSCKWithMode(FSCKModeLength))
 	r.Error(err)
 
 	err = theBot.FSCK(FSCKWithMode(FSCKModeSequences))
@@ -195,7 +195,7 @@ func testFSCKmultipleFeeds(t *testing.T) {
 	}
 	r.NoError(qry.Err())
 
-	err = theBot.FSCK(FSCKWithMode(FSCKModeLength))
+	err := theBot.FSCK(FSCKWithMode(FSCKModeLength))
 	r.Error(err)
 
 	err = theBot.FSCK(FSCKWithMode(FSCKModeSequences))
