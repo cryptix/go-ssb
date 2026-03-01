@@ -6,7 +6,6 @@ package migrate
 
 import (
 	"bytes"
-	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -16,9 +15,7 @@ import (
 	"os/user"
 	"path/filepath"
 
-	"github.com/ssbc/go-luigi"
-	"github.com/ssbc/margaret"
-	libbadger "github.com/ssbc/margaret/indexes/badger"
+	margaret "github.com/ssbc/margaret/v2"
 	extralog "go.mindeco.de/log"
 
 	"github.com/ssbc/go-metafeed"
@@ -31,6 +28,7 @@ import (
 	"github.com/ssbc/go-ssb/internal/slp"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
 	"github.com/ssbc/go-ssb/message/legacy"
+	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/private/box"
 	"github.com/ssbc/go-ssb/private/keys"
 	"github.com/ssbc/go-ssb/query"
@@ -298,10 +296,7 @@ func ingestKeypair(mfID refs.FeedRef, keypair ssb.KeyPair, ssbdir string) error 
 	if err != nil {
 		return e("failed to open badger", err)
 	}
-	idxKeys := libbadger.NewIndexWithKeyPrefix(indexstore, keys.Recipients{}, []byte("group-and-signing"))
-	keystore := &keys.Store{
-		Index: idxKeys,
-	}
+	keystore := keys.NewStore(indexstore, []byte("group-and-signing"))
 
 	// add the classic key to the root metafeed's keystore
 	pubkeyRef := keypair.ID()
@@ -353,10 +348,6 @@ func ingestKeypair(mfID refs.FeedRef, keypair ssb.KeyPair, ssbdir string) error 
 	}
 
 	// close the key store
-	err = idxKeys.Close()
-	if err != nil {
-		e("failed to close index with key prefix§", err)
-	}
 	err = indexstore.Close()
 	if err != nil {
 		e("failed to close index store", err)
@@ -372,33 +363,25 @@ func printLog(bot *sbot.Sbot, feedid refs.FeedRef) error {
 		return e(fmt.Sprintf("couldnt get log %s", feedid.ShortSigil()), err)
 	}
 
-	src, err := l.Query()
-	if err != nil {
-		return e("failed to query log", err)
-	}
-
 	seq := l.Seq()
 	i := int64(0)
 	inform("last seqno:", seq)
 
-	for {
-		v, err := src.Next(context.TODO())
-		if luigi.IsEOS(err) {
-			break
+	qry := l.Query()
+	for _, mm := range qry.Iter() {
+		if mm.Message == nil {
+			i++
+			continue
 		}
-		inform("value:", v)
-		mm, ok := v.(refs.Message)
-		if !ok {
-			return e(fmt.Sprintf("expected %T to be a refs.Message (wrong log type? missing indirection to receive log?)", v))
-		}
+		msg := mm.Message
 
 		fmt.Printf("log seq: %d - %s:%d (%s)\n",
 			i,
-			mm.Author().ShortSigil(),
-			mm.Seq(),
-			mm.Key().ShortSigil())
+			msg.Author().ShortSigil(),
+			msg.Seq(),
+			msg.Key().ShortSigil())
 
-		b := mm.ContentBytes()
+		b := msg.ContentBytes()
 		if n := len(b); n > 128 {
 			fmt.Println("truncating", n, " to last 32 bytes")
 			b = b[len(b)-32:]
@@ -406,6 +389,9 @@ func printLog(bot *sbot.Sbot, feedid refs.FeedRef) error {
 		fmt.Printf("\n%s\n", hex.Dump(b))
 
 		i++
+	}
+	if err := qry.Err(); err != nil {
+		return e("query error", err)
 	}
 
 	// margaret is 0-indexed
@@ -416,7 +402,7 @@ func printLog(bot *sbot.Sbot, feedid refs.FeedRef) error {
 	return nil
 }
 
-func getFeed(bot *sbot.Sbot, feedID refs.FeedRef) (margaret.Log, error) {
+func getFeed(bot *sbot.Sbot, feedID refs.FeedRef) (margaret.Log[*multimsg.MultiMessage], error) {
 	feed, err := bot.Users.Get(storedrefs.Feed(feedID))
 	if err != nil {
 		return nil, ew("get feed")("failed", err)

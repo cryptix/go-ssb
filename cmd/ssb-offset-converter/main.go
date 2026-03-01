@@ -5,27 +5,18 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
-	"github.com/ssbc/go-luigi"
+	margaret "github.com/ssbc/margaret/v2"
+	"github.com/ssbc/margaret/v2/offset2"
+
 	"github.com/ssbc/go-ssb/message/multimsg"
-	"github.com/ssbc/margaret"
-	"github.com/ssbc/margaret/legacyflumeoffset"
-	"github.com/ssbc/margaret/offset2"
 )
 
 func main() {
-
-	var iformat, oformat string = "offset2", "offset2"
-
-	flag.Func("if", "what format to use for the input", validateLogFormat(&iformat))
-	flag.Func("of", "what format to use for the output", validateLogFormat(&oformat))
-
 	var dryRun bool
 	flag.BoolVar(&dryRun, "dry", false, "only output what it would do")
 
@@ -41,89 +32,47 @@ func main() {
 		os.Exit(1)
 	}
 
-	if iformat == oformat && limit == -1 {
-		fmt.Fprintf(os.Stderr, "warning: nothing to do. exiting")
+	if limit == -1 {
+		fmt.Fprintf(os.Stderr, "warning: nothing to do without a limit. exiting\n")
 		os.Exit(1)
 	}
 
 	if dryRun {
-		fmt.Fprintf(os.Stderr, "would convert %s to %s\n", iformat, oformat)
+		fmt.Fprintf(os.Stderr, "would copy offset2 log\n")
 		fmt.Fprintf(os.Stderr, "locations %s to %s\n", logPaths[0], logPaths[1])
 		return
 	}
 
-	var (
-		err           error
-		input, output margaret.Log
-	)
-
-	input, err = openLogWithFormat(logPaths[0], iformat)
+	input, err := offset2.Open[*multimsg.MultiMessage](logPaths[0])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to open input log %s: %s\n", logPaths[0], err)
 		os.Exit(1)
 	}
 
-	output, err = openLogWithFormat(logPaths[1], oformat)
+	output, err := offset2.Open[*multimsg.MultiMessage](logPaths[1])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to open output log %s: %s\n", logPaths[1], err)
 		os.Exit(1)
 	}
 
-	src, err := input.Query(margaret.Limit(limit))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create query on input log %s: %s\n", logPaths[0], err)
-		os.Exit(1)
-	}
-
-	ctx := context.Background()
-	for {
-		v, err := src.Next(ctx)
-		if err != nil {
-			if luigi.IsEOS(err) {
-				break
-			}
-			fmt.Fprintf(os.Stderr, "failed to get log entry %s: %s\n", logPaths[0], err)
-			os.Exit(1)
-		}
-
-		_, err = output.Append(v)
+	qry := input.Query(margaret.Limit(limit))
+	for _, mm := range qry.Iter() {
+		_, err = output.Append(mm)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "failed to write entry to output log %s: %s\n", logPaths[1], err)
 			os.Exit(1)
 		}
 	}
+	if err := qry.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to read input log %s: %s\n", logPaths[0], err)
+		os.Exit(1)
+	}
 
 	fmt.Fprintln(os.Stderr, "all done. closing output log.")
 
-	if c, ok := output.(io.Closer); ok {
+	if c, ok := any(output).(io.Closer); ok {
 		if err = c.Close(); err != nil {
 			fmt.Fprintf(os.Stderr, "failed to close output log %s: %s\n", logPaths[1], err)
 		}
-	}
-}
-
-func validateLogFormat(flag *string) func(string) error {
-	return func(input string) error {
-		switch strings.ToLower(input) {
-		case "offset2":
-			*flag = "offset2"
-			return nil
-		case "lfo", "legacy", "dominic", "flumelog":
-			*flag = "lfo"
-			return nil
-		default:
-			return fmt.Errorf("unknown log format: %s", input)
-		}
-	}
-}
-
-func openLogWithFormat(path string, format string) (margaret.Log, error) {
-	switch format {
-	case "offset2":
-		return offset2.Open(path, multimsg.MargaretCodec{})
-	case "lfo":
-		return legacyflumeoffset.Open(path, FlumeToMultiMsgCodec{})
-	default:
-		return nil, fmt.Errorf("unknown log format: %s", format)
 	}
 }
