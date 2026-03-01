@@ -15,7 +15,7 @@ import (
 	"github.com/ssbc/go-muxrpc/v2"
 	"github.com/ssbc/go-muxrpc/v2/typemux"
 	refs "github.com/ssbc/go-ssb-refs"
-	"github.com/ssbc/margaret/multilog"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
 	"go.mindeco.de/log"
 
 	"github.com/ssbc/go-ssb"
@@ -26,7 +26,7 @@ type replicatePlug struct {
 }
 
 // TODO: add request, block, changes
-func NewPlug(users multilog.MultiLog, self refs.FeedRef, lister ssb.ReplicationLister) ssb.Plugin {
+func NewPlug(users *roaring.MultiLog, self refs.FeedRef, lister ssb.ReplicationLister) ssb.Plugin {
 	plug := &replicatePlug{}
 
 	tm := typemux.New(log.NewNopLogger())
@@ -51,7 +51,7 @@ func (lt replicatePlug) Handler() muxrpc.Handler {
 }
 
 type replicateHandler struct {
-	users  multilog.MultiLog
+	users  *roaring.MultiLog
 	self   refs.FeedRef
 	wanted ssb.ReplicationLister
 }

@@ -5,12 +5,15 @@
 package multilogs
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 
 	"github.com/dgraph-io/badger/v3"
+	margaret "github.com/ssbc/margaret/v2"
+
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
 	"github.com/ssbc/go-ssb/message/multimsg"
@@ -54,6 +57,51 @@ func NewMembershipIndex(logger log.Logger, db *badger.DB, self refs.FeedRef, unb
 
 func (mc *MembershipStore) Close() error {
 	return nil
+}
+
+var memberSeqKey = []byte("group-members__seq")
+
+// LastProcessedSeq returns the last sequence processed by this index.
+func (mc *MembershipStore) LastProcessedSeq() int64 {
+	var val int64 = margaret.SeqEmpty
+	_ = mc.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(memberSeqKey)
+		if err != nil {
+			return err
+		}
+		return item.Value(func(data []byte) error {
+			if len(data) == 8 {
+				val = int64(binary.BigEndian.Uint64(data))
+			}
+			return nil
+		})
+	})
+	return val
+}
+
+func (mc *MembershipStore) setLastProcessedSeq(seq int64) {
+	_ = mc.db.Update(func(txn *badger.Txn) error {
+		var buf [8]byte
+		binary.BigEndian.PutUint64(buf[:], uint64(seq))
+		return txn.Set(memberSeqKey, buf[:])
+	})
+}
+
+// Index processes all unprocessed messages from the log.
+func (mc *MembershipStore) Index(log margaret.Log[*multimsg.MultiMessage]) error {
+	lastSeq := mc.LastProcessedSeq()
+	var opts []margaret.QueryOption
+	if lastSeq >= 0 {
+		opts = append(opts, margaret.Gt(lastSeq))
+	}
+	qry := log.Query(opts...)
+	for seq, mm := range qry.Iter() {
+		if err := mc.ProcessEntry(seq, mm); err != nil {
+			return err
+		}
+		mc.setLastProcessedSeq(seq)
+	}
+	return qry.Err()
 }
 
 func (mc *MembershipStore) getMembers(key []byte) (Members, error) {

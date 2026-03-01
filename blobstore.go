@@ -24,6 +24,7 @@ const (
 )
 
 // BlobStore is the interface of our blob store
+//
 //go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -o mock/blobstore.go . BlobStore
 type BlobStore interface {
 	// Get returns a reader of the blob with given ref.

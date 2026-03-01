@@ -6,6 +6,7 @@ package gossip
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,10 +15,9 @@ import (
 	"sync"
 
 	"github.com/go-kit/kit/metrics"
-	"github.com/ssbc/go-luigi"
 	"github.com/ssbc/go-muxrpc/v2"
-	"github.com/ssbc/margaret"
-	"github.com/ssbc/margaret/multilog"
+	margaret "github.com/ssbc/margaret/v2"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
 	"go.mindeco.de/log"
 	"go.mindeco.de/log/level"
 	"go.mindeco.de/logging"
@@ -27,16 +27,16 @@ import (
 	"github.com/ssbc/go-ssb/internal/luigiutils"
 	"github.com/ssbc/go-ssb/internal/mutil"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
-	"github.com/ssbc/go-ssb/internal/transform"
 	"github.com/ssbc/go-ssb/message"
+	"github.com/ssbc/go-ssb/message/multimsg"
 )
 
 // FeedManager handles serving gossip about User Feeds.
 type FeedManager struct {
 	rootCtx context.Context
 
-	ReceiveLog margaret.Log
-	UserFeeds  multilog.MultiLog
+	ReceiveLog margaret.Log[*multimsg.MultiMessage]
+	UserFeeds  *roaring.MultiLog
 	logger     logging.Interface
 
 	liveFeeds    map[string]*luigiutils.MultiSink
@@ -51,8 +51,8 @@ type FeedManager struct {
 // Feeds.
 func NewFeedManager(
 	ctx context.Context,
-	rxlog margaret.Log,
-	userFeeds multilog.MultiLog,
+	rxlog margaret.Log[*multimsg.MultiMessage],
+	userFeeds *roaring.MultiLog,
 	info logging.Interface,
 	sysGauge metrics.Gauge,
 	sysCtr metrics.Counter,
@@ -71,41 +71,26 @@ func NewFeedManager(
 	return fm
 }
 
-func (m *FeedManager) pour(ctx context.Context, val interface{}, err error) error {
-	m.liveFeedsMut.Lock()
-	defer m.liveFeedsMut.Unlock()
-
-	logger := log.With(m.logger, "event", "live-pour")
-
-	if err != nil {
-		if luigi.IsEOS(err) {
-			return nil
-		}
-		level.Error(logger).Log("msg", "pour failed", "err", err)
-		return err
-	}
-
-	msg := val.(refs.Message)
-	author := msg.Author()
-	sink, ok := m.liveFeeds[author.String()]
-	if !ok {
-		return nil
-	}
-	sink.Send(msg.ValueContentJSON())
-	return nil
-}
-
 func (m *FeedManager) serveLiveFeeds() {
-	src, err := m.ReceiveLog.Query(
+	qry := m.ReceiveLog.Query(
 		margaret.Gt(m.ReceiveLog.Seq()),
-		margaret.Live(true),
+		margaret.Live(m.rootCtx),
 	)
-	if err != nil {
-		panic(err)
-	}
+	for _, mm := range qry.Iter() {
+		if mm.Message == nil {
+			continue
+		}
+		msg := mm.Message
+		author := msg.Author()
 
-	err = luigi.Pump(m.rootCtx, luigi.FuncSink(m.pour), src)
-	if err != nil && err != ssb.ErrShuttingDown && err != context.Canceled && !strings.HasSuffix(err.Error(), "file already closed") {
+		m.liveFeedsMut.Lock()
+		sink, ok := m.liveFeeds[author.String()]
+		if ok {
+			sink.Send(msg.ValueContentJSON())
+		}
+		m.liveFeedsMut.Unlock()
+	}
+	if err := qry.Err(); err != nil && err != ssb.ErrShuttingDown && err != context.Canceled && !strings.HasSuffix(err.Error(), "file already closed") {
 		err = fmt.Errorf("error while serving live feed: %w", err)
 		panic(err)
 	}
@@ -180,6 +165,25 @@ func liveLimit(
 	return lastSeq - startSeq + 1
 }
 
+// writeMessage encodes a message to the muxrpc sink.
+// If keys is true, it wraps the message in a KeyValueRaw envelope.
+func writeMessage(w *muxrpc.ByteSink, msg refs.Message, keys bool) error {
+	if keys {
+		var kv refs.KeyValueRaw
+		kv.Key_ = msg.Key()
+		kv.Value = *msg.ValueContent()
+		kv.Timestamp = refs.Millisecs(msg.Received())
+		kvMsg, err := json.Marshal(kv)
+		if err != nil {
+			return fmt.Errorf("failed to encode key-value: %w", err)
+		}
+		_, err = w.Write(kvMsg)
+		return err
+	}
+	_, err := w.Write(msg.ValueContentJSON())
+	return err
+}
+
 // CreateStreamHistory serves the sink a CreateStreamHistory request to the sink.
 func (m *FeedManager) CreateStreamHistory(
 	ctx context.Context,
@@ -220,7 +224,7 @@ func (m *FeedManager) CreateStreamHistory(
 
 	// Make query
 	limit := nonliveLimit(arg, latest)
-	qryArgs := []margaret.QuerySpec{
+	qryArgs := []margaret.QueryOption{
 		margaret.Limit(int(limit)),
 		margaret.Reverse(arg.Reverse),
 	}
@@ -238,38 +242,78 @@ func (m *FeedManager) CreateStreamHistory(
 	}
 
 	resolved := mutil.Indirect(m.ReceiveLog, userLog)
-	src, err := resolved.Query(qryArgs...)
-	if err != nil {
-		return fmt.Errorf("invalid user log query: %w", err)
-	}
+	qry := resolved.Query(qryArgs...)
 
-	var luigiSink luigi.Sink
-	switch arg.ID.Algo() {
-	case refs.RefAlgoFeedSSB1:
-		luigiSink = transform.NewKeyValueWrapper(sink, arg.Keys)
-
-	case refs.RefAlgoFeedGabby:
-		switch {
-		case arg.AsJSON:
-			luigiSink = transform.NewKeyValueWrapper(sink, arg.Keys)
-		default:
-			luigiSink = luigiutils.NewGabbyStreamSink(sink)
-		}
-
-	case refs.RefAlgoFeedBendyButt:
-		switch {
-		case arg.AsJSON:
-			luigiSink = transform.NewKeyValueWrapper(sink, arg.Keys)
-		default:
-			luigiSink = luigiutils.NewBendyStreamSink(sink)
-		}
-
-	default:
-		return fmt.Errorf("unsupported feed format")
-	}
+	sink.SetEncoding(muxrpc.TypeJSON)
 
 	sent := 0
-	err = luigi.Pump(ctx, luigiutils.NewSinkCounter(&sent, luigiSink), src)
+	for _, mm := range qry.Iter() {
+		select {
+		case <-ctx.Done():
+			break
+		default:
+		}
+
+		if mm.Message == nil {
+			continue
+		}
+		msg := mm.Message
+
+		var writeErr error
+		switch arg.ID.Algo() {
+		case refs.RefAlgoFeedSSB1:
+			writeErr = writeMessage(sink, msg, arg.Keys)
+
+		case refs.RefAlgoFeedGabby:
+			if arg.AsJSON {
+				writeErr = writeMessage(sink, msg, arg.Keys)
+			} else {
+				tr, ok := mm.AsGabby()
+				if !ok {
+					continue
+				}
+				trdata, err := tr.MarshalCBOR()
+				if err != nil {
+					continue
+				}
+				_, writeErr = sink.Write(trdata)
+			}
+
+		case refs.RefAlgoFeedBendyButt:
+			if arg.AsJSON {
+				writeErr = writeMessage(sink, msg, arg.Keys)
+			} else {
+				mf, ok := mm.AsMetaFeed()
+				if !ok {
+					continue
+				}
+				mfData, err := mf.MarshalBencode()
+				if err != nil {
+					continue
+				}
+				_, writeErr = sink.Write(mfData)
+			}
+
+		default:
+			return fmt.Errorf("unsupported feed format")
+		}
+
+		if writeErr != nil {
+			if errors.Is(writeErr, context.Canceled) || muxrpc.IsSinkClosed(writeErr) || errors.Is(writeErr, io.EOF) {
+				break
+			}
+			return fmt.Errorf("failed to write message to peer: %w", writeErr)
+		}
+		sent++
+	}
+
+	if err := qry.Err(); err != nil {
+		if errors.Is(err, context.Canceled) || muxrpc.IsSinkClosed(err) || errors.Is(err, io.EOF) {
+			sink.Close()
+			return nil
+		}
+		return fmt.Errorf("failed to pump messages to peer: %w", err)
+	}
 
 	// track number of messages sent
 	if m.sysCtr != nil {
@@ -278,13 +322,6 @@ func (m *FeedManager) CreateStreamHistory(
 		if sent > 0 {
 			level.Debug(feedLogger).Log("event", "gossiptx", "n", sent, "starting", arg.Seq)
 		}
-	}
-
-	if errors.Is(err, context.Canceled) || muxrpc.IsSinkClosed(err) || errors.Is(err, io.EOF) {
-		sink.Close()
-		return nil
-	} else if err != nil {
-		return fmt.Errorf("failed to pump messages to peer: %w", err)
 	}
 
 	// cryptix: this seems to produce some hangs

@@ -11,9 +11,10 @@ import (
 	refs "github.com/ssbc/go-ssb-refs"
 
 	"github.com/ssbc/go-ssb/internal/storedrefs"
-	"github.com/ssbc/margaret"
-	"github.com/ssbc/margaret/indexes"
-	"github.com/ssbc/margaret/multilog/roaring"
+	"github.com/ssbc/go-ssb/message/multimsg"
+	margaret "github.com/ssbc/margaret/v2"
+	"github.com/ssbc/margaret/v2/multilog"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
 )
 
 type SubsetPlaner struct {
@@ -33,7 +34,7 @@ func (sp *SubsetPlaner) QuerySubsetBitmap(qry SubsetOperation) (*sroar.Bitmap, e
 }
 
 // QuerySubsetMessages evaluates the passed SubsetOperation and returns a slice of messages
-func (sp *SubsetPlaner) QuerySubsetMessages(rxLog margaret.Log, qry SubsetOperation) ([]refs.Message, error) {
+func (sp *SubsetPlaner) QuerySubsetMessages(rxLog margaret.Log[*multimsg.MultiMessage], qry SubsetOperation) ([]refs.Message, error) {
 	resulting, err := combineBitmaps(sp, qry)
 	if err != nil {
 		return nil, err
@@ -50,17 +51,16 @@ func (sp *SubsetPlaner) QuerySubsetMessages(rxLog margaret.Log, qry SubsetOperat
 
 	for i := 0; i < resulting.GetCardinality(); i++ {
 		v := int64(it.Next())
-		msgv, err := rxLog.Get(v)
+		mm, err := rxLog.Get(v)
 		if err != nil {
 			return nil, err
 		}
 
-		msg, ok := msgv.(refs.Message)
-		if !ok {
-			return nil, fmt.Errorf("invalid msg type %T", msgv)
+		if mm.Message == nil {
+			continue
 		}
 
-		msgs = append(msgs, msg)
+		msgs = append(msgs, mm.Message)
 	}
 
 	return msgs, nil
@@ -73,7 +73,7 @@ func combineBitmaps(sp *SubsetPlaner, qry SubsetOperation) (*sroar.Bitmap, error
 		return sp.authors.LoadInternalBitmap(storedrefs.Feed(*qry.feed))
 
 	case "type":
-		return sp.bytype.LoadInternalBitmap(indexes.Addr("string:" + qry.string))
+		return sp.bytype.LoadInternalBitmap(multilog.Addr("string:" + qry.string))
 
 	case "or", "and":
 		if len(qry.args) == 0 {

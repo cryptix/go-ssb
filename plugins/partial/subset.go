@@ -12,14 +12,15 @@ import (
 
 	"github.com/ssbc/go-muxrpc/v2"
 	refs "github.com/ssbc/go-ssb-refs"
+	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/query"
-	"github.com/ssbc/margaret"
+	margaret "github.com/ssbc/margaret/v2"
 )
 
 type getSubsetHandler struct {
 	queryPlaner *query.SubsetPlaner
 
-	rxLog margaret.Log
+	rxLog margaret.Log[*multimsg.MultiMessage]
 }
 
 func (h getSubsetHandler) HandleSource(ctx context.Context, req *muxrpc.Request, sink *muxrpc.ByteSink) error {
@@ -80,15 +81,15 @@ func (h getSubsetHandler) HandleSource(ctx context.Context, req *muxrpc.Request,
 	}
 
 	for _, v := range vals {
-		msgv, err := h.rxLog.Get(int64(v))
+		mm, err := h.rxLog.Get(int64(v))
 		if err != nil {
 			break
 		}
 
-		msg, ok := msgv.(refs.Message)
-		if !ok {
-			return fmt.Errorf("invalid msg type %T", msgv)
+		if mm.Message == nil {
+			continue
 		}
+		msg := mm.Message
 
 		if opts.Keys {
 			buf.Reset()

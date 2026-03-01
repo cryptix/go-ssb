@@ -13,9 +13,10 @@ import (
 	"github.com/ssbc/go-ssb"
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/message"
+	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/repo"
-	"github.com/ssbc/margaret"
-	"github.com/ssbc/margaret/multilog"
+	margaret "github.com/ssbc/margaret/v2"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
 	"go.mindeco.de/log/level"
 	"go.mindeco.de/logging"
 )
@@ -40,8 +41,8 @@ func NewFetcher(
 	log logging.Interface,
 	r repo.Interface,
 	id refs.FeedRef,
-	rxlog margaret.Log,
-	userFeeds multilog.MultiLog,
+	rxlog margaret.Log[*multimsg.MultiMessage],
+	userFeeds *roaring.MultiLog,
 	fm *FeedManager,
 	wantList ssb.ReplicationLister,
 	vr *message.VerificationRouter,
@@ -98,8 +99,8 @@ func NewServer(
 	ctx context.Context,
 	log logging.Interface,
 	id refs.FeedRef,
-	rxlog margaret.Log,
-	userFeeds multilog.MultiLog,
+	rxlog margaret.Log[*multimsg.MultiMessage],
+	userFeeds *roaring.MultiLog,
 	wantList ssb.ReplicationLister,
 	fm *FeedManager,
 	opts ...interface{},

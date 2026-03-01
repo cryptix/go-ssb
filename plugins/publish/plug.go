@@ -12,7 +12,8 @@ import (
 	"github.com/ssbc/go-muxrpc/v2/typemux"
 	"github.com/ssbc/go-ssb"
 	"github.com/ssbc/go-ssb/private"
-	"github.com/ssbc/margaret"
+	margaret "github.com/ssbc/margaret/v2"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
 	"go.mindeco.de/logging"
 )
 
@@ -22,7 +23,7 @@ func NewPlug(
 	i logging.Interface,
 	publish ssb.Publisher,
 	boxer *private.Manager,
-	authorLog margaret.Log,
+	authorLog margaret.Log[*roaring.Seq],
 ) ssb.Plugin {
 	mux := typemux.New(i)
 	p := publishPlug{h: &mux}

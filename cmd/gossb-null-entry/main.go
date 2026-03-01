@@ -2,7 +2,8 @@
 //
 // SPDX-License-Identifier: MIT
 
-/*usefull to eradicate entries in offsetlog by hand.
+/*
+usefull to eradicate entries in offsetlog by hand.
 
 Say you know 15, 28182 and 21881283 are probelematic.
 

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/ssbc/go-metafeed"
-	"github.com/ssbc/margaret"
 
 	gabbygrove "github.com/ssbc/go-gabbygrove"
 	refs "github.com/ssbc/go-ssb-refs"
@@ -22,7 +21,7 @@ import (
 )
 
 type SequencedVerificationSink interface {
-	margaret.Seqer
+	Seq() int64
 
 	Verify([]byte) error
 }
@@ -81,14 +80,14 @@ func (lv legacyVerify) Verify(rmsg []byte) (refs.Message, error) {
 		return nil, err
 	}
 	sm := &legacy.StoredMessage{
-		Key_:       storedrefs.SerialzedMessage{ref},
-		Author_:    storedrefs.SerialzedFeed{dmsg.Author},
+		Key_:       storedrefs.SerialzedMessage{MessageRef: ref},
+		Author_:    storedrefs.SerialzedFeed{FeedRef: dmsg.Author},
 		Sequence_:  int64(dmsg.Sequence),
 		Timestamp_: time.Now(),
 		Raw_:       rmsg,
 	}
 	if prev := dmsg.Previous; prev != nil {
-		sm.Previous_ = &storedrefs.SerialzedMessage{*prev}
+		sm.Previous_ = &storedrefs.SerialzedMessage{MessageRef: *prev}
 	}
 	return sm, nil
 }

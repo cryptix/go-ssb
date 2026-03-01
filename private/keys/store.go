@@ -6,12 +6,12 @@ package keys
 
 import (
 	"bytes"
-	"context"
+	"encoding/json"
 	"fmt"
 
+	"github.com/dgraph-io/badger/v3"
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb-refs/tfk"
-	librarian "github.com/ssbc/margaret/indexes"
 )
 
 // Q: what's the relation of ID and key?
@@ -19,10 +19,21 @@ import (
 // like the id in a database or key in a k:v store.
 
 type Store struct {
-	Index librarian.SetterIndex
+	db     *badger.DB
+	prefix []byte
 }
 
-var todoCtx = context.TODO()
+// NewStore creates a new key store backed by badger with the given key prefix.
+func NewStore(db *badger.DB, prefix []byte) *Store {
+	return &Store{
+		db:     db,
+		prefix: prefix,
+	}
+}
+
+func (mgr *Store) badgerKey(idxkBs []byte) []byte {
+	return append(append([]byte(nil), mgr.prefix...), idxkBs...)
+}
 
 func (mgr *Store) AddKey(id ID, r Recipient) error {
 	if !r.Scheme.Valid() {
@@ -51,7 +62,7 @@ func (mgr *Store) AddKey(id ID, r Recipient) error {
 	// add new key to existing ones
 	recps = append(recps, r)
 
-	return mgr.Index.Set(todoCtx, librarian.Addr(idxkBytes), recps)
+	return mgr.setRaw(idxkBytes, recps)
 }
 
 func (mgr *Store) SetKey(id ID, r Recipient) error {
@@ -69,7 +80,7 @@ func (mgr *Store) SetKey(id ID, r Recipient) error {
 		return err
 	}
 
-	return mgr.Index.Set(todoCtx, librarian.Addr(idxkBs), Recipients{r})
+	return mgr.setRaw(idxkBs, Recipients{r})
 }
 
 func (mgr *Store) RmKeys(ks KeyScheme, id ID) error {
@@ -83,7 +94,10 @@ func (mgr *Store) RmKeys(ks KeyScheme, id ID) error {
 		return err
 	}
 
-	return mgr.Index.Delete(todoCtx, librarian.Addr(idxkBs))
+	key := mgr.badgerKey(idxkBs)
+	return mgr.db.Update(func(txn *badger.Txn) error {
+		return txn.Delete(key)
+	})
 }
 
 func (mgr *Store) RmKey(ks KeyScheme, id ID, rmKey Recipient) error {
@@ -119,7 +133,7 @@ func (mgr *Store) RmKey(ks KeyScheme, id ID, rmKey Recipient) error {
 		return err
 	}
 
-	return mgr.Index.Set(todoCtx, librarian.Addr(idxkBs), recps)
+	return mgr.setRaw(idxkBs, recps)
 }
 
 func (mgr *Store) GetKeysForMessage(ks KeyScheme, msg refs.MessageRef) (Recipients, error) {
@@ -149,27 +163,41 @@ func (mgr *Store) getKeys(ks KeyScheme, id ID) (Recipients, error) {
 		return nil, fmt.Errorf("key store: failed to marshal index key: %w", err)
 	}
 
-	data, err := mgr.Index.Get(todoCtx, librarian.Addr(idxkBs))
+	key := mgr.badgerKey(idxkBs)
+
+	var recps Recipients
+	err = mgr.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(key)
+		if err != nil {
+			return err
+		}
+		return item.Value(func(val []byte) error {
+			return json.Unmarshal(val, &recps)
+		})
+	})
 	if err != nil {
+		if err == badger.ErrKeyNotFound {
+			return nil, Error{
+				Code:   ErrorCodeNoSuchKey,
+				Scheme: ks,
+				ID:     id,
+			}
+		}
 		return nil, fmt.Errorf("key store: failed to get data from index: %w", err)
 	}
 
-	ksIface, err := data.Value()
+	return recps, nil
+}
+
+func (mgr *Store) setRaw(idxkBs []byte, recps Recipients) error {
+	key := mgr.badgerKey(idxkBs)
+
+	val, err := json.Marshal(recps)
 	if err != nil {
-		return nil, fmt.Errorf("key store: failed to unpack index data: %w", err)
+		return fmt.Errorf("key store: failed to marshal recipients: %w", err)
 	}
 
-	switch tv := ksIface.(type) {
-	case Recipients:
-		return tv, nil
-	case librarian.UnsetValue:
-		return nil, Error{
-			Code:   ErrorCodeNoSuchKey,
-			Scheme: ks,
-			ID:     id,
-		}
-	default:
-		return nil, fmt.Errorf("keys store: expected type %T, got %T", Recipients{}, ksIface)
-	}
-
+	return mgr.db.Update(func(txn *badger.Txn) error {
+		return txn.Set(key, val)
+	})
 }

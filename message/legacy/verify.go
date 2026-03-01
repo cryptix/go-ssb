@@ -13,11 +13,12 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
+	"unicode/utf8"
+
 	jsoniter "github.com/json-iterator/go"
 	refs "github.com/ssbc/go-ssb-refs"
 	"golang.org/x/crypto/nacl/auth"
-	"io"
-	"unicode/utf8"
 )
 
 var (

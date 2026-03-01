@@ -12,8 +12,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/ssbc/margaret"
-	"github.com/ssbc/margaret/multilog"
+	margaret "github.com/ssbc/margaret/v2"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
 
 	"github.com/ssbc/go-metafeed"
 	"github.com/ssbc/go-metafeed/metakeys"
@@ -25,6 +25,7 @@ import (
 	"github.com/ssbc/go-ssb/internal/slp"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
 	"github.com/ssbc/go-ssb/message"
+	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/private/keys"
 )
 
@@ -38,15 +39,15 @@ func WithMetaFeedMode(enable bool) Option {
 }
 
 type metaFeedsService struct {
-	rxLog        margaret.Log
+	rxLog        *multimsg.WrappedLog
 	indexManager ssb.IndexFeedManager
-	users        multilog.MultiLog
+	users        *roaring.MultiLog
 	keys         *keys.Store
 
 	hmacSecret *[32]byte
 }
 
-func newMetaFeedService(rxLog margaret.Log, indexManager ssb.IndexFeedManager, users multilog.MultiLog, keyStore *keys.Store, keypair ssb.KeyPair, hmacSecret *[32]byte) (*metaFeedsService, error) {
+func newMetaFeedService(rxLog *multimsg.WrappedLog, indexManager ssb.IndexFeedManager, users *roaring.MultiLog, keyStore *keys.Store, keypair ssb.KeyPair, hmacSecret *[32]byte) (*metaFeedsService, error) {
 	metaKeyPair, ok := keypair.(metakeys.KeyPair)
 	if !ok {
 		return nil, fmt.Errorf("not a metafeed keypair: %T", keypair)
@@ -74,16 +75,18 @@ func (s metaFeedsService) getMsgAtSeq(mfId refs.FeedRef, seq int64) (metamngmt.A
 		return empty, err
 	}
 
-	msgs := mutil.Indirect(s.rxLog, msgSeqs)
+	msgs := mutil.Indirect(margaret.Log[*multimsg.MultiMessage](s.rxLog), msgSeqs)
 
 	// seq is the sequence on the metafeed that the subfeed was created at
-	flatValue, err := msgs.Get(seq - 1) // sequences are stored in a 0-indexed fashion: subtract 1!
+	mm, err := msgs.Get(seq - 1) // sequences are stored in a 0-indexed fashion: subtract 1!
 	if err != nil {
 		return empty, fmt.Errorf("getMsgAtSeq: failed to get msg seq@%d (%w)", seq, err)
 	}
 
-	// massage into compatible form
-	msg := flatValue.(refs.Message)
+	if mm.Message == nil {
+		return empty, fmt.Errorf("getMsgAtSeq: nil message at seq@%d", seq)
+	}
+	msg := mm.Message
 
 	// unpack message contents
 	var addMsg metamngmt.AddDerived

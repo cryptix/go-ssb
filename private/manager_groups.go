@@ -11,7 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/ssbc/margaret"
+	margaret "github.com/ssbc/margaret/v2"
 
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb-refs/tfk"
@@ -334,14 +334,13 @@ func (mgr *Manager) getPrevious() (refs.MessageRef, error) {
 	}
 
 	// else get the message
-	msgV, err := mgr.publog.Get(currSeq)
+	mm, err := mgr.publog.Get(currSeq)
 	if err != nil {
 		return refs.MessageRef{}, err
 	}
-	msg := msgV.(refs.Message)
 
 	// and its key is the previous for that message
-	prev := msg.Key()
+	prev := mm.Message.Key()
 	return prev, nil
 }
 

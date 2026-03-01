@@ -12,7 +12,8 @@ import (
 	"sync"
 
 	"github.com/ssbc/go-muxrpc/v2"
-	"github.com/ssbc/margaret"
+	margaret "github.com/ssbc/margaret/v2"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
 	"go.mindeco.de/log/level"
 	"go.mindeco.de/logging"
 
@@ -26,7 +27,7 @@ type handler struct {
 
 	publishMu *sync.Mutex
 	publish   ssb.Publisher
-	authorLog margaret.Log // for box2 previous
+	authorLog margaret.Log[*roaring.Seq] // for box2 previous
 
 	boxer *private.Manager
 }

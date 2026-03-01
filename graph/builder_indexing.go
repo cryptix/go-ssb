@@ -5,13 +5,13 @@
 package graph
 
 import (
-	"context"
+	"encoding/binary"
 	"fmt"
+	"strings"
 	"time"
 
-	"github.com/ssbc/go-ssb-refs/tfk"
-	"github.com/ssbc/margaret"
-	librarian "github.com/ssbc/margaret/indexes"
+	"github.com/dgraph-io/badger/v3"
+	margaret "github.com/ssbc/margaret/v2"
 	"github.com/zeebo/bencode"
 	"go.mindeco.de/log"
 	"go.mindeco.de/log/level"
@@ -19,8 +19,10 @@ import (
 	"github.com/ssbc/go-metafeed"
 	"github.com/ssbc/go-metafeed/metamngmt"
 	refs "github.com/ssbc/go-ssb-refs"
+	"github.com/ssbc/go-ssb-refs/tfk"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
 	"github.com/ssbc/go-ssb/message/legacy"
+	"github.com/ssbc/go-ssb/message/multimsg"
 )
 
 type idxRelationState uint
@@ -37,9 +39,8 @@ func (b *BadgerBuilder) indexSyncStart() {
 }
 
 func (b *BadgerBuilder) indexSyncDone() {
-	// this delay is here so that the WaitGroup is held while Luigi continues to process more data
-	// TODO: eliminate this delay once we have a way to query Luigi directly to see if it's done with its source queue
-	time.AfterFunc(100 * time.Millisecond, func() {
+	// this delay is here so that the WaitGroup is held while serveIndex processes the next entry
+	time.AfterFunc(100*time.Millisecond, func() {
 		b.idxInSync.Done()
 	})
 }
@@ -49,25 +50,127 @@ func (b *BadgerBuilder) WaitUntilIndexesAreSynced() {
 	b.idxInSync.Wait()
 }
 
-func (b *BadgerBuilder) updateAnnouncement(ctx context.Context, seq int64, val interface{}, idx librarian.SetterIndex) error {
-	b.cacheLock.Lock()
+// graphLogIndexer implements a LogIndexer for the graph builder.
+// It processes messages from a margaret log, calling the update function for each message.
+type graphLogIndexer struct {
+	name    string
+	db      *badger.DB
+	seqKey  []byte
+	builder *BadgerBuilder
+	update  func(seq int64, msg refs.Message) error
+}
+
+func (gi *graphLogIndexer) lastProcessedSeq() int64 {
+	var val int64 = margaret.SeqEmpty
+	_ = gi.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(gi.seqKey)
+		if err != nil {
+			return err // key not found => SeqEmpty
+		}
+		return item.Value(func(data []byte) error {
+			if len(data) == 8 {
+				val = int64(binary.BigEndian.Uint64(data))
+			}
+			return nil
+		})
+	})
+	return val
+}
+
+func (gi *graphLogIndexer) setLastProcessedSeq(seq int64) {
+	_ = gi.db.Update(func(txn *badger.Txn) error {
+		var buf [8]byte
+		binary.BigEndian.PutUint64(buf[:], uint64(seq))
+		return txn.Set(gi.seqKey, buf[:])
+	})
+}
+
+// Index processes all unprocessed messages from the log.
+func (gi *graphLogIndexer) Index(log margaret.Log[*multimsg.MultiMessage]) error {
+	gi.builder.indexSyncStart()
+	defer gi.builder.indexSyncDone()
+
+	lastSeq := gi.lastProcessedSeq()
+	var opts []margaret.QueryOption
+	if lastSeq >= 0 {
+		opts = append(opts, margaret.Gt(lastSeq))
+	}
+	qry := log.Query(opts...)
+	for seq, mm := range qry.Iter() {
+		if mm.Message == nil {
+			gi.setLastProcessedSeq(seq)
+			continue
+		}
+		if err := gi.update(seq, mm.Message); err != nil {
+			return err
+		}
+		gi.setLastProcessedSeq(seq)
+	}
+	return qry.Err()
+}
+
+func (gi *graphLogIndexer) Close() error { return nil }
+
+// OpenContactsIndex returns a LogIndexer that processes contact messages.
+func (b *BadgerBuilder) OpenContactsIndex() *graphLogIndexer {
 	b.indexSyncStart()
 	defer b.indexSyncDone()
+
+	return &graphLogIndexer{
+		name:    "contacts",
+		db:      b.kv,
+		seqKey:  []byte("trust-graph__seq:contacts"),
+		builder: b,
+		update:  b.updateContacts,
+	}
+}
+
+func (b *BadgerBuilder) updateContacts(_ int64, msg refs.Message) error {
+	b.cacheLock.Lock()
 	defer b.cacheLock.Unlock()
 
-	if nulled, ok := val.(error); ok {
-		if margaret.IsErrNulled(nulled) {
-			return nil
-		}
-		return nulled
+	var c refs.Contact
+	err := c.UnmarshalJSON(msg.ContentBytes())
+	if err != nil {
+		// just ignore invalid messages
+		return nil
 	}
 
-	msg, ok := val.(refs.Message)
-	if !ok {
-		err := fmt.Errorf("graph/idx: invalid msg value %T", val)
-		level.Warn(b.log).Log("msg", "announcement eval failed", "reason", err)
-		return err
+	addr := storedrefs.Feed(msg.Author())
+	addr += storedrefs.Feed(c.Contact)
+	switch {
+	case c.Following:
+		err = b.setRelation(addr, idxRelValueFollowing)
+	case c.Blocking:
+		err = b.setRelation(addr, idxRelValueBlocking)
+	default:
+		err = b.setRelation(addr, idxRelValueNone)
 	}
+	if err != nil {
+		return fmt.Errorf("db/idx contacts: failed to update index. %+v: %w", c, err)
+	}
+
+	b.cachedGraph = nil
+	return nil
+}
+
+// OpenAnnouncementIndex returns a LogIndexer that processes metafeed/announce messages.
+func (b *BadgerBuilder) OpenAnnouncementIndex() *graphLogIndexer {
+	b.indexSyncStart()
+	defer b.indexSyncDone()
+
+	return &graphLogIndexer{
+		name:    "announcements",
+		db:      b.kv,
+		seqKey:  []byte("trust-graph__seq:announcements"),
+		builder: b,
+		update:  b.updateAnnouncement,
+	}
+}
+
+func (b *BadgerBuilder) updateAnnouncement(_ int64, msg refs.Message) error {
+	b.cacheLock.Lock()
+	defer b.cacheLock.Unlock()
 
 	announceMsg, ok := legacy.VerifyMetafeedAnnounce(msg.ContentBytes(), msg.Author(), nil) // TODO: hmac support
 	if !ok {
@@ -81,106 +184,37 @@ func (b *BadgerBuilder) updateAnnouncement(ctx context.Context, seq int64, val i
 		return fmt.Errorf("db/idx announcements: failed to turn metafeed value into binary: %w", err)
 	}
 
-	err = idx.Set(ctx, addr, tfkRef)
+	tfkBytes, err := tfkRef.MarshalBinary()
+	if err != nil {
+		return fmt.Errorf("db/idx announcements: failed to marshal tfk: %w", err)
+	}
+
+	err = b.setAnnouncement(addr, tfkBytes)
 	if err != nil {
 		return fmt.Errorf("db/idx announcements: failed to update index %+v: %w", announceMsg, err)
 	}
 
 	b.cachedGraph = nil
-	// TODO: patch existing graph instead of invalidating
 	return nil
 }
 
-func (b *BadgerBuilder) OpenAnnouncementIndex() (librarian.SeqSetterIndex, librarian.SinkIndex) {
+// OpenMetafeedsIndex returns a LogIndexer that processes metafeed messages (add/existing, add/derived, tombstone).
+func (b *BadgerBuilder) OpenMetafeedsIndex() *graphLogIndexer {
 	b.indexSyncStart()
 	defer b.indexSyncDone()
-	if b.idxSinkAnnouncements == nil {
-		b.idxSinkAnnouncements = librarian.NewSinkIndex(b.updateAnnouncement, b.idx)
+
+	return &graphLogIndexer{
+		name:    "metafeeds",
+		db:      b.kv,
+		seqKey:  []byte("trust-graph__seq:metafeeds"),
+		builder: b,
+		update:  b.updateMetafeeds,
 	}
-	return b.idx, b.idxSinkAnnouncements
 }
 
-func (b *BadgerBuilder) updateContacts(ctx context.Context, seq int64, val interface{}, idx librarian.SetterIndex) error {
+func (b *BadgerBuilder) updateMetafeeds(_ int64, msg refs.Message) error {
 	b.cacheLock.Lock()
-	b.indexSyncStart()
-	defer b.indexSyncDone()
 	defer b.cacheLock.Unlock()
-
-	if nulled, ok := val.(error); ok {
-		if margaret.IsErrNulled(nulled) {
-			return nil
-		}
-		return nulled
-	}
-
-	abs, ok := val.(refs.Message)
-	if !ok {
-		err := fmt.Errorf("graph/idx: invalid msg value %T", val)
-		level.Warn(b.log).Log("msg", "contact eval failed", "reason", err)
-		return err
-	}
-
-	var c refs.Contact
-	err := c.UnmarshalJSON(abs.ContentBytes())
-	if err != nil {
-		// just ignore invalid messages, nothing to do with them (unless you are debugging something)
-		//level.Warn(b.log).Log("msg", "skipped contact message", "reason", err)
-		return nil
-	}
-
-	addr := storedrefs.Feed(abs.Author())
-	addr += storedrefs.Feed(c.Contact)
-	switch {
-	case c.Following:
-		err = idx.Set(ctx, addr, idxRelValueFollowing)
-	case c.Blocking:
-		err = idx.Set(ctx, addr, idxRelValueBlocking)
-	default:
-		err = idx.Set(ctx, addr, idxRelValueNone)
-		// cryptix: not sure why this doesn't work
-		// it also removes the node if this is the only follow from that peer
-		// 3 state handling seems saner
-		// err = idx.Delete(ctx, librarian.Addr(addr))
-	}
-	if err != nil {
-		return fmt.Errorf("db/idx contacts: failed to update index. %+v: %w", c, err)
-	}
-
-	b.cachedGraph = nil
-	// TODO: patch existing graph instead of invalidating
-	return nil
-}
-
-func (b *BadgerBuilder) OpenContactsIndex() (librarian.SeqSetterIndex, librarian.SinkIndex) {
-	b.indexSyncStart()
-	defer b.indexSyncDone()
-	if b.idxSinkContacts == nil {
-		b.idxSinkContacts = librarian.NewSinkIndex(b.updateContacts, b.idx)
-	}
-	return b.idx, b.idxSinkContacts
-}
-
-func (b *BadgerBuilder) updateMetafeeds(ctx context.Context, seq int64, val interface{}, idx librarian.SetterIndex) error {
-	b.cacheLock.Lock()
-	b.indexSyncStart()
-	defer b.indexSyncDone()
-	defer b.cacheLock.Unlock()
-
-	if nulled, ok := val.(error); ok {
-		if margaret.IsErrNulled(nulled) {
-			return nil
-		}
-		return nulled
-	}
-
-	msg, ok := val.(refs.Message)
-	if !ok {
-		err, ok := val.(error)
-		if ok && margaret.IsErrNulled(err) {
-			return nil
-		}
-		return fmt.Errorf("index/get: unexpected message type: %T", val)
-	}
 
 	// skip invalid feeds
 	if msg.Author().Algo() != refs.RefAlgoFeedBendyButt {
@@ -190,8 +224,6 @@ func (b *BadgerBuilder) updateMetafeeds(ctx context.Context, seq int64, val inte
 	msgLogger := log.With(b.log,
 		"event", "metafeed update",
 		"msg-key", msg.Key().ShortSigil(),
-
-		// debugging
 		"author", msg.Author().String(),
 		"seq", msg.Seq(),
 	)
@@ -215,7 +247,7 @@ func (b *BadgerBuilder) updateMetafeeds(ctx context.Context, seq int64, val inte
 		return nil
 	}
 
-	level.Debug(msgLogger).Log("processing-rxseq", seq)
+	level.Debug(msgLogger).Log("processing-rxseq", msg.Seq())
 
 	addr := storedrefs.Feed(msg.Author())
 
@@ -230,13 +262,12 @@ func (b *BadgerBuilder) updateMetafeeds(ctx context.Context, seq int64, val inte
 
 		if !addMsg.MetaFeed.Equal(msg.Author()) {
 			level.Warn(msgLogger).Log("warning", "content is not about the author of the metafeed", "content feed", addMsg.MetaFeed.ShortSigil(), "meta author", msg.Author().ShortSigil())
-			// skip invalid add message
 			return nil
 		}
 		addr += storedrefs.Feed(addMsg.SubFeed)
 
 		level.Info(msgLogger).Log("adding", addMsg.SubFeed.String())
-		err = idx.Set(ctx, addr, idxRelValueMetafeed)
+		err = b.setRelation(addr, idxRelValueMetafeed)
 
 	case "metafeed/add/derived":
 		var addMsg metamngmt.AddDerived
@@ -248,13 +279,12 @@ func (b *BadgerBuilder) updateMetafeeds(ctx context.Context, seq int64, val inte
 
 		if !addMsg.MetaFeed.Equal(msg.Author()) {
 			level.Warn(msgLogger).Log("warning", "content is not about the author of the metafeed", "content feed", addMsg.MetaFeed.ShortSigil(), "meta author", msg.Author().ShortSigil())
-			// skip invalid add message
 			return nil
 		}
 		addr += storedrefs.Feed(addMsg.SubFeed)
 
 		level.Info(msgLogger).Log("adding", addMsg.SubFeed.ShortSigil())
-		err = idx.Set(ctx, addr, idxRelValueMetafeed)
+		err = b.setRelation(addr, idxRelValueMetafeed)
 
 	case "metafeed/tombstone":
 		var tMsg metamngmt.Tombstone
@@ -266,13 +296,12 @@ func (b *BadgerBuilder) updateMetafeeds(ctx context.Context, seq int64, val inte
 
 		if !tMsg.MetaFeed.Equal(msg.Author()) {
 			level.Warn(msgLogger).Log("warning", "content is not about the author of the metafeed", "content feed", tMsg.MetaFeed.ShortSigil(), "meta author", msg.Author().ShortSigil())
-			// skip invalid add message
 			return nil
 		}
 		addr += storedrefs.Feed(tMsg.SubFeed)
 
 		level.Info(msgLogger).Log("removing", tMsg.SubFeed.ShortSigil())
-		err = idx.Set(ctx, addr, idxRelValueNone)
+		err = b.setRelation(addr, idxRelValueNone)
 
 	default:
 		level.Warn(msgLogger).Log("warning", "unhandeled message type", "type", justTheType.Type)
@@ -283,14 +312,25 @@ func (b *BadgerBuilder) updateMetafeeds(ctx context.Context, seq int64, val inte
 	}
 
 	return nil
-
 }
 
-func (b *BadgerBuilder) OpenMetafeedsIndex() (librarian.SeqSetterIndex, librarian.SinkIndex) {
-	b.indexSyncStart()
-	defer b.indexSyncDone()
-	if b.idxSinkMetaFeeds == nil {
-		b.idxSinkMetaFeeds = librarian.NewSinkIndex(b.updateMetafeeds, b.idx)
+// IsMetafeedMessage checks if a message has metafeed content type (for filtering).
+func IsMetafeedMessage(msg refs.Message) bool {
+	content := msg.ContentBytes()
+	var signedContent []bencode.RawMessage
+	err := bencode.DecodeBytes(content, &signedContent)
+	if err != nil {
+		return false
 	}
-	return b.idx, b.idxSinkMetaFeeds
+
+	if len(signedContent) < 2 {
+		return false
+	}
+
+	var justTheType metamngmt.Typed
+	err = bencode.DecodeBytes(signedContent[0], &justTheType)
+	if err != nil {
+		return false
+	}
+	return strings.HasPrefix(justTheType.Type, "metafeed/")
 }

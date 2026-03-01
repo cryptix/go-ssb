@@ -5,16 +5,13 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"runtime/debug"
 	"strconv"
 
-	"github.com/ssbc/go-luigi"
-	"github.com/ssbc/margaret"
+	margaret "github.com/ssbc/margaret/v2"
 
-	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/repo"
 )
 
@@ -50,34 +47,20 @@ func main() {
 	from, err := repo.OpenLog(repoFrom)
 	check(err)
 
-	src, err := from.Query(margaret.Gt(startSeq), margaret.Limit(limit), margaret.SeqWrap(true))
-	check(err)
-	err = src.(luigi.PushSource).Push(context.TODO(), luigi.FuncSink(func(ctx context.Context, v interface{}, err error) error {
-		if err == (luigi.EOS{}) {
-			return nil
+	qry := from.Query(margaret.Gt(startSeq), margaret.Limit(limit))
+	for seq, mm := range qry.Iter() {
+		if mm.Message == nil {
+			continue
 		}
-		if err != nil {
-			return fmt.Errorf("push failed: %w", err)
-		}
-
-		sw := v.(margaret.SeqWrapper)
-
-		sv := sw.Value()
-
-		msg, ok := sv.(refs.Message)
-		if !ok {
-			panic("wrong message type")
-		}
+		msg := mm.Message
 		os.Stdout.WriteString(fmt.Sprintf(`
 		{
 			"key": %q,
 			"rxSeq": %d,
 			"value":
-		`, msg.Key().String(), sw.Seq()))
+		`, msg.Key().String(), seq))
 		os.Stdout.Write(msg.ValueContentJSON())
 		os.Stdout.WriteString("}\n")
-		return err
-	}))
-	check(err)
-
+	}
+	check(qry.Err())
 }

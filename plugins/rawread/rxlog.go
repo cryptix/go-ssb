@@ -10,13 +10,12 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/ssbc/go-luigi"
 	"github.com/ssbc/go-muxrpc/v2"
-	"github.com/ssbc/margaret"
+	margaret "github.com/ssbc/margaret/v2"
 
 	"github.com/ssbc/go-ssb"
-	"github.com/ssbc/go-ssb/internal/transform"
 	"github.com/ssbc/go-ssb/message"
+	"github.com/ssbc/go-ssb/message/multimsg"
 )
 
 // ~> sbot createLogStream --help
@@ -26,7 +25,7 @@ type rxLogPlug struct {
 	h muxrpc.Handler
 }
 
-func NewRXLog(rootLog margaret.Log) ssb.Plugin {
+func NewRXLog(rootLog margaret.Log[*multimsg.MultiMessage]) ssb.Plugin {
 	plug := &rxLogPlug{}
 	plug.h = rxLogHandler{
 		root: rootLog,
@@ -44,7 +43,7 @@ func (lt rxLogPlug) Handler() muxrpc.Handler {
 }
 
 type rxLogHandler struct {
-	root margaret.Log
+	root margaret.Log[*multimsg.MultiMessage]
 }
 
 func (rxLogHandler) Handled(m muxrpc.Method) bool { return m.String() == "createLogStream" }
@@ -52,7 +51,6 @@ func (rxLogHandler) Handled(m muxrpc.Method) bool { return m.String() == "create
 func (g rxLogHandler) HandleConnect(ctx context.Context, e muxrpc.Endpoint) {}
 
 func (g rxLogHandler) HandleCall(ctx context.Context, req *muxrpc.Request) {
-	// fmt.Fprintln(os.Stderr, "createLogStream args:", string(req.RawArgs))
 	var qry message.CreateLogArgs
 	var args []message.CreateLogArgs
 	err := json.Unmarshal(req.RawArgs, &args)
@@ -74,37 +72,41 @@ func (g rxLogHandler) HandleCall(ctx context.Context, req *muxrpc.Request) {
 		qry.Limit = -1
 	}
 
-	// only return message keys
-	// qry.Values = true
-
 	if qry.Gt == -1 {
 		qry.Seq = int64(g.root.Seq()) - 1
 	}
 
-	// start := time.Now()
-	src, err := g.root.Query(
-		margaret.SeqWrap(false),
+	qryOpts := []margaret.QueryOption{
 		margaret.Gte(int64(qry.Seq)),
 		margaret.Limit(int(qry.Limit)),
-		margaret.Live(qry.Live),
 		margaret.Reverse(qry.Reverse),
-	)
-	if err != nil {
-		req.CloseWithError(fmt.Errorf("logStream: failed to qry tipe: %w", err))
-		return
 	}
+	if qry.Live {
+		qryOpts = append(qryOpts, margaret.Live(ctx))
+	}
+	qryIter := g.root.Query(qryOpts...)
 
 	snk, err := req.ResponseSink()
 	if err != nil {
 		req.CloseWithError(err)
 		return
 	}
-	err = luigi.Pump(ctx, transform.NewKeyValueWrapper(snk, qry.Keys), src)
-	if err != nil {
+	snk.SetEncoding(muxrpc.TypeJSON)
+
+	for _, mm := range qryIter.Iter() {
+		if mm.Message == nil {
+			continue
+		}
+		if err := writeMessage(snk, mm.Message, qry.Keys); err != nil {
+			fmt.Fprintln(os.Stderr, "createLogStream write err:", err)
+			req.CloseWithError(fmt.Errorf("logStream: failed to write msg: %w", err))
+			return
+		}
+	}
+	if err := qryIter.Err(); err != nil {
 		fmt.Fprintln(os.Stderr, "createLogStream err:", err)
-		req.CloseWithError(fmt.Errorf("logStream: failed to pump msgs: %w", err))
+		req.CloseWithError(fmt.Errorf("logStream: query failed: %w", err))
 		return
 	}
 	snk.Close()
-	// fmt.Fprintln(os.Stderr, "createLogStream closed:", err, "after:", time.Since(start))
 }

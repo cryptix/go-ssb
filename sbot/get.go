@@ -10,6 +10,7 @@ import (
 	"github.com/ssbc/go-ssb"
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
+	"github.com/ssbc/margaret/v2/indexes"
 )
 
 func (s *Sbot) Get(ref refs.MessageRef) (refs.Message, error) {
@@ -18,38 +19,25 @@ func (s *Sbot) Get(ref refs.MessageRef) (refs.Message, error) {
 		return nil, fmt.Errorf("sbot: get index disabled")
 	}
 
-	obs, err := getIdx.Get(s.rootCtx, storedrefs.Message(ref))
+	seq, err := getIdx.Get(indexes.Addr(storedrefs.Message(ref)))
 	if err != nil {
 		return nil, fmt.Errorf("sbot/get: failed to get seq val from index: %w", err)
 	}
 
-	v, err := obs.Value()
-	if err != nil {
-		return nil, fmt.Errorf("sbot/get: failed to get current value from obs: %w", err)
+	if seq < 0 {
+		return nil, fmt.Errorf("invalid sequence stored in index")
 	}
 
-	var seq int64
-	switch tv := v.(type) {
-	case int64:
-		if tv < 0 {
-			return nil, fmt.Errorf("invalid sequence stored in index")
-		}
-		seq = int64(tv)
-	default:
-		return nil, fmt.Errorf("sbot/get: wrong sequence type in index: %T", v)
-	}
-
-	storedV, err := s.ReceiveLog.Get(seq)
+	mm, err := s.ReceiveLog.Get(seq)
 	if err != nil {
 		return nil, fmt.Errorf("sbot/get: failed to load message: %w", err)
 	}
 
-	msg, ok := storedV.(refs.Message)
-	if !ok {
-		return nil, fmt.Errorf("sbot/get: wrong message type in storeage: %T", storedV)
+	if mm.Message == nil {
+		return nil, fmt.Errorf("sbot/get: stored message is nil")
 	}
 
-	return msg, nil
+	return mm.Message, nil
 }
 
 func (s *Sbot) CurrentSequence(feed refs.FeedRef) (ssb.Note, error) {

@@ -11,14 +11,14 @@ import (
 	"time"
 
 	"github.com/ssbc/go-muxrpc/v2"
-	"github.com/ssbc/margaret"
+	margaret "github.com/ssbc/margaret/v2"
 	"go.mindeco.de/log"
 	"go.mindeco.de/log/level"
 
 	"github.com/ssbc/go-muxrpc/v2/typemux"
 	"github.com/ssbc/go-ssb"
-	"github.com/ssbc/go-ssb/internal/transform"
 	"github.com/ssbc/go-ssb/message"
+	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/repo"
 )
 
@@ -28,13 +28,13 @@ import (
 type sortedPlug struct {
 	info log.Logger
 
-	root margaret.Log
+	root margaret.Log[*multimsg.MultiMessage]
 	res  *repo.SequenceResolver
 
 	h muxrpc.Handler
 }
 
-func NewSortedStream(log log.Logger, rootLog margaret.Log, res *repo.SequenceResolver) ssb.Plugin {
+func NewSortedStream(log log.Logger, rootLog margaret.Log[*multimsg.MultiMessage], res *repo.SequenceResolver) ssb.Plugin {
 	plug := &sortedPlug{
 		root: rootLog,
 		res:  res,
@@ -81,9 +81,6 @@ func (g sortedPlug) HandleSource(ctx context.Context, req *muxrpc.Request, snk *
 		qry.Limit = -1
 	}
 
-	// TODO: only return message keys
-	// qry.Values = true
-
 	sortedSeqs, err := g.res.SortAndFilterAll(repo.SortByClaimed, func(ts int64) bool {
 		isGreater := ts > int64(qry.Gt)
 		isSmaller := ts < int64(qry.Lt)
@@ -96,23 +93,28 @@ func (g sortedPlug) HandleSource(ctx context.Context, req *muxrpc.Request, snk *
 	sorted := time.Now()
 	level.Debug(logger).Log("event", "sorted seqs", "n", len(sortedSeqs), "took", time.Since(start))
 
-	toJSON := transform.NewKeyValueWrapper(snk, qry.Keys)
+	snk.SetEncoding(muxrpc.TypeJSON)
 
-	// wrap it into a counter for debugging
 	var cnt int
-	sender := newSinkCounter(&cnt, toJSON)
-
 	for _, res := range sortedSeqs {
-		v, err := g.root.Get(int64(res.Seq))
+		mm, err := g.root.Get(int64(res.Seq))
 		if err != nil {
+			if margaret.IsErrNulled(err) {
+				continue
+			}
 			level.Warn(logger).Log("event", "failed to get seq", "seq", res.Seq, "err", err)
 			continue
 		}
 
-		if err := sender.Pour(ctx, v); err != nil {
+		if mm.Message == nil {
+			continue
+		}
+
+		if err := writeMessage(snk, mm.Message, qry.Keys); err != nil {
 			level.Warn(logger).Log("event", "failed to send", "seq", res.Seq, "err", err)
 			break
 		}
+		cnt++
 
 		if qry.Limit >= 0 {
 			qry.Limit--

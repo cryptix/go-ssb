@@ -6,94 +6,105 @@ package private
 
 import (
 	"bytes"
-	"context"
 	"encoding/base64"
-	"errors"
 	"fmt"
+	"iter"
 
-	"github.com/ssbc/go-luigi"
-	"github.com/ssbc/go-luigi/mfr"
+	margaret "github.com/ssbc/margaret/v2"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
+
 	"github.com/ssbc/go-ssb"
 	refs "github.com/ssbc/go-ssb-refs"
+	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/private/box"
-	"github.com/ssbc/margaret"
 )
 
-type unboxedLog struct {
-	root, seqlog margaret.Log
-	kp           ssb.KeyPair
-	boxer        *box.Boxer
+// UnboxedLog provides access to decrypted private messages.
+// It resolves sequence numbers from a sublog through the root log and decrypts them.
+type UnboxedLog struct {
+	root   margaret.Log[*multimsg.MultiMessage]
+	seqlog margaret.Log[*roaring.Seq]
+	kp     ssb.KeyPair
+	boxer  *box.Boxer
 }
 
 // NewUnboxerLog expects the sequence numbers, that are returned from seqlog, to be decryptable by kp.
-func NewUnboxerLog(root, seqlog margaret.Log, kp ssb.KeyPair) margaret.Log {
-	il := unboxedLog{
+func NewUnboxerLog(root margaret.Log[*multimsg.MultiMessage], seqlog margaret.Log[*roaring.Seq], kp ssb.KeyPair) *UnboxedLog {
+	return &UnboxedLog{
 		root:   root,
 		seqlog: seqlog,
 		kp:     kp,
 		boxer:  box.NewBoxer(nil),
 	}
-	return il
 }
 
-func (il unboxedLog) Changes() luigi.Observable {
-	return il.seqlog.Changes()
-}
-
-func (il unboxedLog) Seq() int64 {
+func (il *UnboxedLog) Seq() int64 {
 	return il.seqlog.Seq()
 }
 
-func (il unboxedLog) Get(seq int64) (interface{}, error) {
+func (il *UnboxedLog) Get(seq int64) (refs.KeyValueRaw, error) {
 	v, err := il.seqlog.Get(seq)
 	if err != nil {
-		return nil, fmt.Errorf("seqlog: 1st lookup failed: %w", err)
+		return refs.KeyValueRaw{}, fmt.Errorf("seqlog: 1st lookup failed: %w", err)
 	}
 
-	rv, err := il.indirectFunc(context.TODO(), v)
-	if err != nil {
-		return nil, fmt.Errorf("seqlog: fetch-then-decrypt failed: %w", err)
-	}
-	return rv, nil
+	return il.resolveAndDecrypt(int64(*v))
 }
 
-// Query maps the sequence values in seqlog to an unboxed version of the message
-func (il unboxedLog) Query(args ...margaret.QuerySpec) (luigi.Source, error) {
-	src, err := il.seqlog.Query(args...)
-	if err != nil {
-		return nil, fmt.Errorf("unboxLog: error querying seqlog: %w", err)
-	}
-
-	return mfr.SourceMap(src, il.indirectFunc), nil
+// unboxedIterator implements margaret.QueryIterator[refs.KeyValueRaw]
+type unboxedIterator struct {
+	iterFn func(yield func(int64, refs.KeyValueRaw) bool)
+	errFn  func() error
 }
 
-func (il unboxedLog) indirectFunc(ctx context.Context, iv interface{}) (interface{}, error) {
-	var rootSeq int64
-	var wrappedSeq margaret.Seqer
-	switch tv := iv.(type) {
-	case int64:
-		rootSeq = tv
-	case margaret.SeqWrapper:
-		wrappedSeq = tv
+func (ui *unboxedIterator) Iter() iter.Seq2[int64, refs.KeyValueRaw] {
+	return ui.iterFn
+}
 
-		wrappedVal := tv.Value()
-		seq, ok := wrappedVal.(int64)
-		if !ok {
-			fmt.Errorf("expected sequence type: %T", wrappedVal)
-		}
-		rootSeq = seq
-	default:
-		return nil, fmt.Errorf("expected sequence type: %T", iv)
+func (ui *unboxedIterator) Err() error {
+	return ui.errFn()
+}
+
+// Query maps the sequence values in seqlog to an unboxed version of the message.
+func (il *UnboxedLog) Query(args ...margaret.QueryOption) margaret.QueryIterator[refs.KeyValueRaw] {
+	innerQry := il.seqlog.Query(args...)
+
+	var resolveErr error
+	return &unboxedIterator{
+		iterFn: func(yield func(int64, refs.KeyValueRaw) bool) {
+			for seq, seqVal := range innerQry.Iter() {
+				rootSeq := int64(*seqVal)
+				msg, err := il.resolveAndDecrypt(rootSeq)
+				if err != nil {
+					if margaret.IsErrNulled(err) {
+						continue
+					}
+					resolveErr = fmt.Errorf("unboxLog: resolve seq %d failed: %w", rootSeq, err)
+					return
+				}
+				if !yield(seq, msg) {
+					return
+				}
+			}
+		},
+		errFn: func() error {
+			if resolveErr != nil {
+				return resolveErr
+			}
+			return innerQry.Err()
+		},
 	}
+}
 
-	val, err := il.root.Get(rootSeq)
+func (il *UnboxedLog) resolveAndDecrypt(rootSeq int64) (refs.KeyValueRaw, error) {
+	mm, err := il.root.Get(rootSeq)
 	if err != nil {
-		return nil, fmt.Errorf("unboxLog: error getting v(%v) from seqlog log: %w", iv, err)
+		return refs.KeyValueRaw{}, fmt.Errorf("unboxLog: error getting v(%d) from root log: %w", rootSeq, err)
 	}
 
-	amsg, ok := val.(refs.Message)
-	if !ok {
-		return nil, fmt.Errorf("wrong message type. expected %T - got %T", amsg, val)
+	amsg := mm.Message
+	if amsg == nil {
+		return refs.KeyValueRaw{}, fmt.Errorf("unboxLog: nulled message at %d", rootSeq)
 	}
 
 	author := amsg.Author()
@@ -103,14 +114,14 @@ func (il unboxedLog) indirectFunc(ctx context.Context, iv interface{}) (interfac
 	case refs.RefAlgoFeedSSB1:
 		input := amsg.ContentBytes()
 		if !(input[0] == '"' && input[len(input)-1] == '"') {
-			return nil, fmt.Errorf("expected json string with quotes")
+			return refs.KeyValueRaw{}, fmt.Errorf("expected json string with quotes")
 		}
 		b64data := bytes.TrimSuffix(input[1:], []byte(".box\""))
 		boxedData := make([]byte, len(b64data))
 
 		n, err := base64.StdEncoding.Decode(boxedData, b64data)
 		if err != nil {
-			return nil, fmt.Errorf("decode pm: invalid b64 encoding: %w", err)
+			return refs.KeyValueRaw{}, fmt.Errorf("decode pm: invalid b64 encoding: %w", err)
 		}
 		boxedContent = boxedData[:n]
 
@@ -118,12 +129,12 @@ func (il unboxedLog) indirectFunc(ctx context.Context, iv interface{}) (interfac
 		boxedContent = bytes.TrimPrefix(amsg.ContentBytes(), []byte("box1:"))
 
 	default:
-		return nil, fmt.Errorf("decode pm: unknown feed type: %s", author.Algo())
+		return refs.KeyValueRaw{}, fmt.Errorf("decode pm: unknown feed type: %s", author.Algo())
 	}
 
 	clearContent, err := il.boxer.Decrypt(il.kp, boxedContent)
 	if err != nil {
-		return nil, fmt.Errorf("unboxLog: unbox failed: %w", err)
+		return refs.KeyValueRaw{}, fmt.Errorf("unboxLog: unbox failed: %w", err)
 	}
 
 	var msg refs.KeyValueRaw
@@ -137,15 +148,5 @@ func (il unboxedLog) indirectFunc(ctx context.Context, iv interface{}) (interfac
 	msg.Value.Content = clearContent
 	msg.Value.Signature = "go-ssb-unboxed"
 
-	if wrappedSeq != nil {
-		return margaret.WrapWithSeq(msg, wrappedSeq.Seq()), nil
-	}
-
 	return msg, nil
-
-}
-
-// Append doesn't work on this log. They need to go through the proper channels.
-func (il unboxedLog) Append(interface{}) (int64, error) {
-	return -2, errors.New("can't append to seqloged log, sorry")
 }

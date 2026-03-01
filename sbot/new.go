@@ -21,15 +21,12 @@ import (
 	"github.com/dgraph-io/badger/v3"
 	"github.com/go-kit/kit/metrics"
 	"github.com/rs/cors"
-	"github.com/ssbc/go-metafeed/metamngmt"
 	"github.com/ssbc/go-muxrpc/v2"
 	"github.com/ssbc/go-netwrap"
-	librarian "github.com/ssbc/margaret/indexes"
-	libbadger "github.com/ssbc/margaret/indexes/badger"
-	"github.com/ssbc/margaret/multilog"
-	"github.com/ssbc/margaret/multilog/roaring"
-	multibadger "github.com/ssbc/margaret/multilog/roaring/badger"
-	"github.com/zeebo/bencode"
+	mindexes "github.com/ssbc/margaret/v2/indexes"
+	"github.com/ssbc/margaret/v2/multilog"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
+	multifs "github.com/ssbc/margaret/v2/multilog/roaring/fs"
 	"go.mindeco.de/log"
 	"go.mindeco.de/log/level"
 	"golang.org/x/sync/errgroup"
@@ -81,10 +78,10 @@ type Sbot struct {
 
 	rootCtx context.Context
 	// Shutdown needs to be called to shutdown indexing
-	Shutdown  context.CancelFunc
-	closers   multicloser.MultiCloser
-	idxDone   errgroup.Group
-	idxInSync sync.WaitGroup
+	Shutdown      context.CancelFunc
+	closers       multicloser.MultiCloser
+	idxDone       errgroup.Group
+	idxInSync     sync.WaitGroup
 	idxNumSyncing int64
 
 	closed   bool
@@ -144,8 +141,8 @@ type Sbot struct {
 	indexStore *badger.DB
 
 	// plugin indexes
-	mlogIndicies map[string]multilog.MultiLog
-	simpleIndex  map[string]librarian.Index
+	mlogIndicies map[string]*roaring.MultiLog
+	simpleIndex  map[string]mindexes.Index[int64]
 
 	liveIndexUpdates bool
 	indexStateMu     sync.Mutex
@@ -180,8 +177,8 @@ func New(fopts ...Option) (*Sbot, error) {
 	s.public = ssb.NewPluginManager()
 	s.master = ssb.NewPluginManager()
 
-	s.mlogIndicies = make(map[string]multilog.MultiLog)
-	s.simpleIndex = make(map[string]librarian.Index)
+	s.mlogIndicies = make(map[string]*roaring.MultiLog)
+	s.simpleIndex = make(map[string]mindexes.Index[int64])
 	s.indexStates = make(map[string]string)
 
 	s.disableLegacyLiveReplication = true
@@ -312,10 +309,7 @@ func New(fopts ...Option) (*Sbot, error) {
 		// TODO: mentions
 	}
 	for _, index := range mlogs {
-		mlog, err := multibadger.NewShared(s.indexStore, []byte("mlog-"+index.Name))
-		if err != nil {
-			return nil, err
-		}
+		mlog := multifs.NewMultiLog(storageRepo.GetPath(repo.PrefixMultiLog, index.Name))
 		s.closers.AddCloser(mlog)
 		s.mlogIndicies[index.Name] = mlog
 
@@ -330,30 +324,22 @@ func New(fopts ...Option) (*Sbot, error) {
 	if s.signHMACsecret != nil {
 		pubopts = append(pubopts, message.SetHMACKey(s.signHMACsecret))
 	}
-	s.PublishLog, err = message.OpenPublishLog(s.ReceiveLog, s.Users, s.KeyPair, pubopts...)
+	s.PublishLog, err = message.OpenPublishLog(s.ReceiveLog.(*multimsg.WrappedLog), s.Users, s.KeyPair, pubopts...)
 	if err != nil {
 		return nil, fmt.Errorf("sbot: failed to create publish log: %w", err)
 	}
 
 	// get(msgRef) -> rxLog sequence index
-	getIdx, updateSink := indexes.OpenGet(s.indexStore)
-	s.closers.AddCloser(updateSink)
-	s.serveIndex("get", updateSink)
+	getIdx, getIdxSink := indexes.OpenGet(s.indexStore)
+	s.serveIndex("get", getIdxSink)
 	s.simpleIndex["get"] = getIdx
 
 	// groups2
-	idxKeys := libbadger.NewIndexWithKeyPrefix(s.indexStore, keys.Recipients{}, []byte("group-and-signing"))
-	keysStore := &keys.Store{
-		Index: idxKeys,
-	}
-	s.closers.AddCloser(idxKeys)
+	keysStore := keys.NewStore(s.indexStore, []byte("group-and-signing"))
 
 	s.Groups = private.NewManager(s.KeyPair, s.PublishLog, keysStore, s.ReceiveLog, s, s.Tangles)
 
-	groupsHelperMlog, err := multibadger.NewShared(s.indexStore, []byte("group-member-helper"))
-	if err != nil {
-		return nil, err
-	}
+	groupsHelperMlog := multifs.NewMultiLog(storageRepo.GetPath(repo.PrefixMultiLog, "group-member-helper"))
 	s.closers.AddCloser(groupsHelperMlog)
 
 	// the big combined index of most the things
@@ -376,7 +362,7 @@ func New(fopts ...Option) (*Sbot, error) {
 	s.closers.AddCloser(combIdx)
 
 	// groups re-indexing
-	members, membersSnk := multilogs.NewMembershipIndex(
+	members := multilogs.NewMembershipIndex(
 		log.With(s.info, "unit", "private-groups"),
 		s.indexStore,
 		s.KeyPair.ID(),
@@ -384,16 +370,15 @@ func New(fopts ...Option) (*Sbot, error) {
 		combIdx,
 	)
 	s.closers.AddCloser(members)
-	s.closers.AddCloser(membersSnk)
 
-	addMemberIdxAddr := librarian.Addr("string:group/add-member")
+	addMemberIdxAddr := multilog.Addr("string:group/add-member")
 	addMemberSeqs, err := groupsHelperMlog.Get(addMemberIdxAddr)
 	if err != nil {
 		return nil, fmt.Errorf("sbot: failed to open sublog for add-member messages: %w", err)
 	}
 	justAddMemberMsgs := mutil.Indirect(s.ReceiveLog, addMemberSeqs)
 
-	s.serveIndexFrom("group-members", membersSnk, justAddMemberMsgs)
+	s.serveIndexFrom("group-members", members, justAddMemberMsgs)
 
 	/* TODO: fix deadlock in index update locking
 	if _, ok := s.simpleIndex["content-delete-requests"]; !ok {
@@ -411,33 +396,31 @@ func New(fopts ...Option) (*Sbot, error) {
 
 	// contact/follow graph
 	gb := graph.NewBuilder(log.With(s.info, "module", "graph"), s.indexStore, s.signHMACsecret)
-	seqSetter, updateContactsSink := gb.OpenContactsIndex()
+	contactsIdx := gb.OpenContactsIndex()
 
 	// create data source for contacts
-	contactLog, err := s.ByType.Get(librarian.Addr("string:contact"))
+	contactLog, err := s.ByType.Get(multilog.Addr("string:contact"))
 	if err != nil {
 		return nil, fmt.Errorf("sbot: failed to open message contact sublog: %w", err)
 	}
 	justContacts := mutil.Indirect(s.ReceiveLog, contactLog)
 
 	// fill the index
-	s.serveIndexFrom("contacts", updateContactsSink, justContacts)
-	s.closers.AddCloser(seqSetter)
+	s.serveIndexFrom("contacts", contactsIdx, justContacts)
 	s.GraphBuilder = gb
 
 	// abouts
 
 	// create data source for abouts
-	aboutSeqs, err := s.ByType.Get(librarian.Addr("string:about"))
+	aboutSeqs, err := s.ByType.Get(multilog.Addr("string:about"))
 	if err != nil {
 		return nil, fmt.Errorf("sbot: failed to open message about sublog: %w", err)
 	}
 	aboutsOnly := mutil.Indirect(s.ReceiveLog, aboutSeqs)
 
 	var namesPlug names.Plugin
-	_, aboutSnk := namesPlug.OpenSharedIndex(s.indexStore)
-	s.closers.AddCloser(aboutSnk)
-	s.serveIndexFrom("abouts", aboutSnk, aboutsOnly)
+	aboutIdx := namesPlug.OpenSharedIndex(s.indexStore)
+	s.serveIndexFrom("abouts", aboutIdx, aboutsOnly)
 
 	// need to close s.indexStore _after_ the all the indexes closed and flushed
 	s.closers.AddCloser(s.indexStore)
@@ -495,7 +478,7 @@ func New(fopts ...Option) (*Sbot, error) {
 				return nil, fmt.Errorf("failed to initialize index feed manager: %w", err)
 			}
 
-			s.MetaFeeds, err = newMetaFeedService(s.ReceiveLog, s.IndexFeeds, s.Users, keysStore, s.KeyPair, s.signHMACsecret)
+			s.MetaFeeds, err = newMetaFeedService(s.ReceiveLog.(*multimsg.WrappedLog), s.IndexFeeds, s.Users, keysStore, s.KeyPair, s.signHMACsecret)
 			if err != nil {
 				return nil, fmt.Errorf("failed to initialize metafeed service: %w", err)
 			}
@@ -504,34 +487,13 @@ func New(fopts ...Option) (*Sbot, error) {
 		// setup indexing
 
 		// 1) all metafeed/* messages in bendybutt format
-		justMetafeedMessages := repo.NewFilteredLog(s.ReceiveLog, func(msg refs.Message) bool {
-			content := msg.ContentBytes()
-			// the relevant messages will be in the form of [{content,...}, signature]
-			var signedContent []bencode.RawMessage
-			err := bencode.DecodeBytes(content, &signedContent)
-			if err != nil {
-				return false
-			}
+		justMetafeedMessages := repo.NewFilteredLog(s.ReceiveLog, graph.IsMetafeedMessage)
 
-			if len(signedContent) < 2 { // not the expected form
-				return false
-			}
-
-			var justTheType metamngmt.Typed
-			// the 'type:xyz' we are looking for is in the object in the first element of the array
-			err = bencode.DecodeBytes(signedContent[0], &justTheType)
-			if err != nil {
-				return false
-			}
-			rightType := strings.HasPrefix(justTheType.Type, "metafeed/")
-			return rightType
-		})
-
-		_, mfSink := gb.OpenMetafeedsIndex()
-		s.serveIndexFrom("metafeed", mfSink, justMetafeedMessages)
+		mfIdx := gb.OpenMetafeedsIndex()
+		s.serveIndexFrom("metafeed", mfIdx, justMetafeedMessages)
 
 		// 2) metafeed/announce on normal format
-		byTypeAnnouncementSeqs, err := s.ByType.Get(librarian.Addr("string:metafeed/announce"))
+		byTypeAnnouncementSeqs, err := s.ByType.Get(multilog.Addr("string:metafeed/announce"))
 		if err != nil {
 			return nil, fmt.Errorf("sbot: failed to open by type 'metafeed/announce' sublog: %w", err)
 		}
@@ -539,8 +501,8 @@ func New(fopts ...Option) (*Sbot, error) {
 		// convert sequences only to their actual messages using mutil.Indirect
 		byTypeAnnouncements := mutil.Indirect(s.ReceiveLog, byTypeAnnouncementSeqs)
 
-		_, announcementSink := gb.OpenAnnouncementIndex()
-		s.serveIndexFrom("metafeed announcements", announcementSink, byTypeAnnouncements)
+		announcementIdx := gb.OpenAnnouncementIndex()
+		s.serveIndexFrom("metafeed announcements", announcementIdx, byTypeAnnouncements)
 	}
 
 	// from here on just network related stuff
@@ -630,7 +592,7 @@ func New(fopts ...Option) (*Sbot, error) {
 
 	// private
 	// TODO: box2
-	userPrivs, err := s.Private.Get(librarian.Addr("box1:") + storedrefs.Feed(s.KeyPair.ID()))
+	userPrivs, err := s.Private.Get(multilog.Addr("box1:") + storedrefs.Feed(s.KeyPair.ID()))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open user private index: %w", err)
 	}
@@ -686,7 +648,7 @@ func New(fopts ...Option) (*Sbot, error) {
 		histOpts = append(histOpts, gossip.NumberOfConcurrentReplications(s.numberOfConcurrentReplications))
 	}
 
-	s.verifyRouter, err = message.NewVerificationRouter(s.ReceiveLog, s.Users, s.signHMACsecret)
+	s.verifyRouter, err = message.NewVerificationRouter(s.ReceiveLog.(*multimsg.WrappedLog), s.Users, s.signHMACsecret)
 	if err != nil {
 		return nil, err
 	}
@@ -738,7 +700,7 @@ func New(fopts ...Option) (*Sbot, error) {
 	s.public.Register(hist)
 
 	// get idx muxrpc handler
-	s.master.Register(get.New(s, s.ReceiveLog, s.Groups))
+	s.master.Register(get.New(s, s.Groups))
 
 	// about information
 	s.master.Register(namesPlug)

@@ -15,7 +15,8 @@ import (
 	"github.com/dgraph-io/badger/v3"
 	"github.com/ssbc/go-muxrpc/v2"
 	refs "github.com/ssbc/go-ssb-refs"
-	"github.com/ssbc/margaret"
+	"github.com/ssbc/go-ssb/message/multimsg"
+	margaret "github.com/ssbc/margaret/v2"
 	kitlog "go.mindeco.de/log"
 
 	"github.com/ssbc/go-ssb"
@@ -31,7 +32,7 @@ type Service struct {
 	network ssb.Network
 
 	publish    ssb.Publisher
-	receiveLog margaret.Log
+	receiveLog margaret.Log[*multimsg.MultiMessage]
 	replicator ssb.Replicator
 
 	kv *badger.DB
@@ -89,7 +90,7 @@ func New(
 	self refs.FeedRef,
 	nw ssb.Network,
 	publish ssb.Publisher,
-	rlog margaret.Log,
+	rlog margaret.Log[*multimsg.MultiMessage],
 	rep ssb.Replicator,
 	db *badger.DB,
 ) (*Service, error) {

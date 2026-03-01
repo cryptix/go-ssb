@@ -6,7 +6,6 @@ package private
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -15,10 +14,8 @@ import (
 	"io"
 	"sort"
 
-	"github.com/ssbc/go-luigi"
-	"github.com/ssbc/go-luigi/mfr"
-	"github.com/ssbc/margaret"
-	"github.com/ssbc/margaret/multilog"
+	margaret "github.com/ssbc/margaret/v2"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
 
@@ -27,6 +24,7 @@ import (
 	"github.com/ssbc/go-ssb-refs/tfk"
 	"github.com/ssbc/go-ssb/internal/extra25519"
 	"github.com/ssbc/go-ssb/internal/slp"
+	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/private/box"
 	"github.com/ssbc/go-ssb/private/box2"
 	"github.com/ssbc/go-ssb/private/keys"
@@ -34,11 +32,11 @@ import (
 
 // Manager is in charge of storing and retriving keys with the help of keymgr, can de- and encrypt messages and publish them.
 type Manager struct {
-	receiveLog   margaret.Log
+	receiveLog   margaret.Log[*multimsg.MultiMessage]
 	receiveByRef ssb.Getter
 
 	publog  ssb.Publisher
-	tangles multilog.MultiLog
+	tangles *roaring.MultiLog
 
 	author ssb.KeyPair
 
@@ -47,7 +45,7 @@ type Manager struct {
 }
 
 // NewManager creates a new Manager
-func NewManager(author ssb.KeyPair, publishLog ssb.Publisher, km *keys.Store, rxlog margaret.Log, getter ssb.Getter, tangles multilog.MultiLog) *Manager {
+func NewManager(author ssb.KeyPair, publishLog ssb.Publisher, km *keys.Store, rxlog margaret.Log[*multimsg.MultiMessage], getter ssb.Getter, tangles *roaring.MultiLog) *Manager {
 	return &Manager{
 		receiveLog:   rxlog,
 		receiveByRef: getter,
@@ -298,34 +296,37 @@ func (mgr *Manager) DecryptBox2Message(m refs.Message) ([]byte, error) {
 	return mgr.DecryptBox2(ctxt, m.Author(), *m.Previous())
 }
 
-func (mgr *Manager) WrappedUnboxingSink(snk luigi.Sink) luigi.Sink {
-	return mfr.SinkMap(snk, func(_ context.Context, v interface{}) (interface{}, error) {
-		msg, ok := v.(refs.Message)
-		if !ok {
-			return nil, fmt.Errorf("failed to find message in empty interface(%T)", v)
+// UnboxMessage attempts to decrypt a message and returns a KeyValueRaw with the cleartext content.
+// If the message is not encrypted, returns it unchanged.
+func (mgr *Manager) UnboxMessage(msg refs.Message) (refs.KeyValueRaw, error) {
+	cleartxt, err := mgr.DecryptMessage(msg)
+	if err != nil {
+		if err == ErrNotBoxed {
+			// return the message as-is
+			var rv refs.KeyValueRaw
+			rv.Key_ = msg.Key()
+			rv.Value.Author = msg.Author()
+			rv.Value.Previous = msg.Previous()
+			rv.Value.Sequence = msg.Seq()
+			rv.Value.Timestamp = refs.Millisecs(msg.Claimed())
+			rv.Value.Content = msg.ContentBytes()
+			return rv, nil
 		}
+		return refs.KeyValueRaw{}, fmt.Errorf("unboxing failed: %w", err)
+	}
 
-		cleartxt, err := mgr.DecryptMessage(msg)
-		if err != nil {
-			if err == ErrNotBoxed {
-				return v, nil
-			}
-			return nil, fmt.Errorf("unboxing failed: %w", err)
-		}
+	var rv refs.KeyValueRaw
+	rv.Key_ = msg.Key()
+	rv.Value.Author = msg.Author()
+	rv.Value.Previous = msg.Previous()
+	rv.Value.Sequence = msg.Seq()
+	rv.Value.Timestamp = refs.Millisecs(msg.Claimed())
+	rv.Value.Signature = "reboxed"
 
-		var rv refs.KeyValueRaw
-		rv.Key_ = msg.Key()
-		rv.Value.Author = msg.Author()
-		rv.Value.Previous = msg.Previous()
-		rv.Value.Sequence = msg.Seq()
-		rv.Value.Timestamp = refs.Millisecs(msg.Claimed())
-		rv.Value.Signature = "reboxed"
+	rv.Value.Content = cleartxt
 
-		rv.Value.Content = cleartxt
+	rv.Value.Meta = make(map[string]interface{})
+	rv.Value.Meta["private"] = true
 
-		rv.Value.Meta = make(map[string]interface{})
-		rv.Value.Meta["private"] = true
-
-		return rv, nil
-	})
+	return rv, nil
 }

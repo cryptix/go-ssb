@@ -13,7 +13,6 @@ import (
 	"github.com/ssbc/go-ssb"
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/private"
-	"github.com/ssbc/margaret"
 	"go.mindeco.de/logging"
 )
 
@@ -21,7 +20,7 @@ type privatePlug struct {
 	h muxrpc.Handler
 }
 
-func NewPlug(i logging.Interface, author refs.FeedRef, mngr *private.Manager, publish ssb.Publisher, readIdx margaret.Log) ssb.Plugin {
+func NewPlug(i logging.Interface, author refs.FeedRef, mngr *private.Manager, publish ssb.Publisher, readIdx *private.UnboxedLog) ssb.Plugin {
 	handler := handler{
 		author:  author,
 		mngr:    mngr,

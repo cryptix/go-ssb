@@ -9,6 +9,7 @@ import (
 
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/message"
+	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/repo"
 )
 
@@ -28,7 +29,11 @@ func (sbot *Sbot) PublishAs(nick string, val interface{}) (refs.Message, error) 
 		pubopts = append(pubopts, message.SetHMACKey(sbot.signHMACsecret))
 	}
 
-	pl, err := message.OpenPublishLog(sbot.ReceiveLog, sbot.Users, kp, pubopts...)
+	rxlog, ok := sbot.ReceiveLog.(*multimsg.WrappedLog)
+	if !ok {
+		return nil, fmt.Errorf("publishAs: unexpected receive log type %T", sbot.ReceiveLog)
+	}
+	pl, err := message.OpenPublishLog(rxlog, sbot.Users, kp, pubopts...)
 	if err != nil {
 		return nil, fmt.Errorf("publishAs: failed to create publish log: %w", err)
 	}

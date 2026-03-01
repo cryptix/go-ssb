@@ -14,8 +14,6 @@ import (
 	"github.com/dgraph-io/badger/v3"
 	"github.com/keks/testops"
 	"github.com/stretchr/testify/require"
-
-	librarian "github.com/ssbc/margaret/indexes"
 )
 
 type opDo func(t *testing.T, env interface{})
@@ -25,23 +23,18 @@ func (op opDo) Do(t *testing.T, env interface{}) {
 }
 
 func TestStore(t *testing.T) {
-	if os.Getenv("LIBRARIAN_WRITEALL") != "0" {
-		t.Fatal("please 'export LIBRARIAN_WRITEALL=0' for this test to pass")
-	}
-
 	tDir := filepath.Join("testrun", t.Name())
 	os.RemoveAll(tDir)
 	os.MkdirAll(tDir, 0700)
 
 	var (
-		idx librarian.SeqSetterIndex
 		db  *badger.DB
-		mgr Store
+		mgr *Store
 	)
 
 	tcs := []testops.TestCase{
 		{
-			Name: "compound test", // TODO: split this into smaller tests
+			Name: "compound test",
 			Ops: []testops.Op{
 				opDBCreate{
 					Name: filepath.Join(tDir, "testdb"),
@@ -49,25 +42,18 @@ func TestStore(t *testing.T) {
 				},
 				opIndexNew{
 					DB:    &db,
-					Type:  Keys(nil),
-					Index: &idx,
+					Store: &mgr,
 				},
-				opDo(func(t *testing.T, env interface{}) {
-					mgr = Store{idx}
-				}),
 				opStoreAddKey{
 					Mgr:    &mgr,
 					ID:     ID("test"),
 					Scheme: SchemeLargeSymmetricGroup,
-					Key:    Key("topsecret")},
+					Key:    Key("topsecret"),
+				},
 				opIndexGet{
-					Index: &idx,
-					Addr: librarian.Addr([]byte{
-						30, 0, // type is 30 byte long
-						101, 110, 118, 101, 108, 111, 112, 101, 45, 108, 97, 114, 103, 101, 45, 115, 121, 109, 109, 101, 116, 114, 105, 99, 45, 103, 114, 111, 117, 112,
-						4, 0, // db key is four byte long
-						't', 'e', 's', 't', // "test"
-					}),
+					Store:  &mgr,
+					Scheme: SchemeLargeSymmetricGroup,
+					ID:     ID("test"),
 
 					ExpValue: Recipients{
 						Recipient{
@@ -99,13 +85,9 @@ func TestStore(t *testing.T) {
 					Key:    Key("alsosecret"),
 				},
 				opIndexGet{
-					Index: &idx,
-					Addr: librarian.Addr([]byte{
-						30, 0, // type is 30 byte long
-						101, 110, 118, 101, 108, 111, 112, 101, 45, 108, 97, 114, 103, 101, 45, 115, 121, 109, 109, 101, 116, 114, 105, 99, 45, 103, 114, 111, 117, 112,
-						4, 0, // db key is four byte long
-						't', 'e', 's', 't', // "test"
-					}),
+					Store:  &mgr,
+					Scheme: SchemeLargeSymmetricGroup,
+					ID:     ID("test"),
 
 					ExpValue: Recipients{
 						Recipient{

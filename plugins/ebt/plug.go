@@ -8,14 +8,15 @@ import (
 	"sync"
 
 	"github.com/ssbc/go-muxrpc/v2"
-	"github.com/ssbc/margaret"
-	"github.com/ssbc/margaret/multilog"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
 	"go.mindeco.de/logging"
 
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/internal/statematrix"
 	"github.com/ssbc/go-ssb/message"
+	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/plugins/gossip"
+	margaret "github.com/ssbc/margaret/v2"
 )
 
 type Plugin struct{ *MUXRPCHandler }
@@ -23,8 +24,8 @@ type Plugin struct{ *MUXRPCHandler }
 func NewPlug(
 	i logging.Interface,
 	self refs.FeedRef,
-	rootLog margaret.Log,
-	uf multilog.MultiLog,
+	rootLog margaret.Log[*multimsg.MultiMessage],
+	uf *roaring.MultiLog,
 	fm *gossip.FeedManager,
 	sm *statematrix.StateMatrix,
 	v *message.VerificationRouter,

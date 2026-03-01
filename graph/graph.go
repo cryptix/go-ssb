@@ -12,13 +12,13 @@ import (
 	"github.com/ssbc/go-ssb"
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
-	librarian "github.com/ssbc/margaret/indexes"
+	"github.com/ssbc/margaret/v2/multilog"
 	"gonum.org/v1/gonum/graph"
 	"gonum.org/v1/gonum/graph/path"
 	"gonum.org/v1/gonum/graph/simple"
 )
 
-type key2node map[librarian.Addr]*contactNode
+type key2node map[multilog.Addr]*contactNode
 
 type Graph struct {
 	sync.Mutex

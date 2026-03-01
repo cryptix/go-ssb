@@ -8,14 +8,16 @@ import (
 	"fmt"
 	"sync"
 
+	margaret "github.com/ssbc/margaret/v2"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
+
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
-	"github.com/ssbc/margaret"
-	"github.com/ssbc/margaret/multilog"
+	"github.com/ssbc/go-ssb/message/multimsg"
 )
 
 // NewVerificationRouter supplies a unique drain per author that skip duplicate messages
-func NewVerificationRouter(rxlog margaret.Log, feeds multilog.MultiLog, hmacSec *[32]byte) (*VerificationRouter, error) {
+func NewVerificationRouter(rxlog *multimsg.WrappedLog, feeds *roaring.MultiLog, hmacSec *[32]byte) (*VerificationRouter, error) {
 	return &VerificationRouter{
 		hmacSec: hmacSec,
 
@@ -29,11 +31,11 @@ func NewVerificationRouter(rxlog margaret.Log, feeds multilog.MultiLog, hmacSec 
 }
 
 type MargaretSaver struct {
-	margaret.Log
+	*multimsg.WrappedLog
 }
 
 func (ms MargaretSaver) Save(msg refs.Message) error {
-	_, err := ms.Log.Append(msg)
+	_, err := ms.WrappedLog.AppendMessage(msg)
 	return err
 }
 
@@ -42,8 +44,8 @@ type verifyFanIn map[string]SequencedVerificationSink
 
 // VerificationRouter hands out sinks (or drains) to pour messages into for verification and storage
 type VerificationRouter struct {
-	rxlog margaret.Log
-	feeds multilog.MultiLog
+	rxlog margaret.Log[*multimsg.MultiMessage]
+	feeds *roaring.MultiLog
 
 	saver SaveMessager
 
@@ -53,7 +55,7 @@ type VerificationRouter struct {
 	sinks verifyFanIn
 }
 
-// GetSink returns a verification sink for that author. If called twice for the same author it returns the same drink (for deduplication)
+// GetSink returns a verification sink for that author. If called twice for the same author it returns the same sink (for deduplication)
 func (vs *VerificationRouter) GetSink(ref refs.FeedRef, complete bool) (SequencedVerificationSink, error) {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
@@ -108,22 +110,14 @@ func (vs VerificationRouter) getLatestMsg(ref refs.FeedRef) (refs.Message, error
 		return firstMessage(ref), nil
 	}
 
-	rxVal, err := userLog.Get(latest)
+	rootSeqVal, err := userLog.Get(latest)
 	if err != nil {
 		return nil, fmt.Errorf("failed to look up root seq for latest user sublog: %w", err)
 	}
-	msgV, err := vs.rxlog.Get(rxVal.(int64))
+	mm, err := vs.rxlog.Get(int64(*rootSeqVal))
 	if err != nil {
-		return nil, fmt.Errorf("failed retreive stored message: %w", err)
+		return nil, fmt.Errorf("failed to retrieve stored message: %w", err)
 	}
 
-	var ok bool
-	latestMsg, ok := msgV.(refs.Message)
-	if !ok {
-		return nil, fmt.Errorf("fetch: wrong message type. expected %T - got %T", latestMsg, msgV)
-	}
-
-	return latestMsg, nil
-
-	panic("unreadable")
+	return mm.Message, nil
 }

@@ -12,8 +12,7 @@ import (
 	"sync"
 
 	"github.com/dgraph-io/badger/v3"
-	librarian "github.com/ssbc/margaret/indexes"
-	libbadger "github.com/ssbc/margaret/indexes/badger"
+	"github.com/ssbc/margaret/v2/multilog"
 	"go.mindeco.de/log"
 	"go.mindeco.de/log/level"
 	"gonum.org/v1/gonum/graph"
@@ -43,23 +42,11 @@ type Builder interface {
 	DeleteAuthor(who refs.FeedRef) error
 }
 
-type IndexingBuilder interface {
-	Builder
-
-	OpenIndex() (librarian.SeqSetterIndex, librarian.SinkIndex)
-}
-
 // BadgerBuilder can construct a graph from the badger key-value database it was initialized with.
 type BadgerBuilder struct {
 	kv *badger.DB
 
-	idx librarian.SeqSetterIndex
-
-	idxSinkContacts      librarian.SinkIndex
-	idxSinkMetaFeeds     librarian.SinkIndex
-	idxSinkAnnouncements librarian.SinkIndex
-
-	idxInSync   sync.WaitGroup
+	idxInSync sync.WaitGroup
 
 	log log.Logger
 
@@ -80,8 +67,6 @@ func NewBuilder(log log.Logger, db *badger.DB, hmacSecret *[32]byte) *BadgerBuil
 		kv:  db,
 		log: log,
 
-		idx: libbadger.NewIndexWithKeyPrefix(db, 0, dbKeyPrefix),
-
 		hmacSecret: hmacSecret,
 	}
 
@@ -90,6 +75,22 @@ func NewBuilder(log log.Logger, db *badger.DB, hmacSecret *[32]byte) *BadgerBuil
 	defer b.indexSyncDone()
 
 	return b
+}
+
+// setRelation stores a contact/metafeed relationship state in badger.
+func (b *BadgerBuilder) setRelation(addr multilog.Addr, state idxRelationState) error {
+	key := append(append([]byte(nil), dbKeyPrefix...), []byte(addr)...)
+	return b.kv.Update(func(txn *badger.Txn) error {
+		return txn.Set(key, []byte{byte('0' + state)})
+	})
+}
+
+// setAnnouncement stores a metafeed announcement (raw TFK bytes) in badger.
+func (b *BadgerBuilder) setAnnouncement(addr multilog.Addr, tfkFeed []byte) error {
+	key := append(append([]byte(nil), dbKeyPrefix...), []byte(addr)...)
+	return b.kv.Update(func(txn *badger.Txn) error {
+		return txn.Set(key, tfkFeed)
+	})
 }
 
 func (b *BadgerBuilder) DeleteAuthor(who refs.FeedRef) error {
@@ -161,7 +162,7 @@ func (b *BadgerBuilder) Build() (*Graph, error) {
 				return fmt.Errorf("builder: couldnt idx key value (to): %w", err)
 			}
 
-			bfrom := librarian.Addr(rawFrom)
+			bfrom := multilog.Addr(rawFrom)
 			nFrom, has := dg.lookup[bfrom]
 			if !has {
 				fromRef, err := from.Feed()
@@ -174,7 +175,7 @@ func (b *BadgerBuilder) Build() (*Graph, error) {
 				dg.lookup[bfrom] = nFrom
 			}
 
-			bto := librarian.Addr(rawTo)
+			bto := multilog.Addr(rawTo)
 			nTo, has := dg.lookup[bto]
 			if !has {
 				toRef, err := to.Feed()
@@ -367,9 +368,9 @@ func (b *BadgerBuilder) Subfeeds(metaFeed refs.FeedRef) (*ssb.StrFeedSet, error)
 
 // Hops returns a slice of feed refrences that are in a particulare range of from
 //
-//    * max == 0: only direct follows of from
-//    * max == 1: max:0 + follows of friends of from
-//    * max == 2: max:1 + follows of their friends
+//   - max == 0: only direct follows of from
+//   - max == 1: max:0 + follows of friends of from
+//   - max == 2: max:1 + follows of their friends
 //
 // See hops_test.go for concrete examples.
 func (b *BadgerBuilder) Hops(from refs.FeedRef, max int) *ssb.StrFeedSet {

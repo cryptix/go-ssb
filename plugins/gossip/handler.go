@@ -15,10 +15,9 @@ import (
 	"time"
 
 	"github.com/go-kit/kit/metrics"
-	"github.com/ssbc/go-luigi"
 	"github.com/ssbc/go-muxrpc/v2"
-	"github.com/ssbc/margaret"
-	"github.com/ssbc/margaret/multilog"
+	margaret "github.com/ssbc/margaret/v2"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
 	"go.mindeco.de/log"
 	"go.mindeco.de/log/level"
 	"go.mindeco.de/logging"
@@ -27,6 +26,7 @@ import (
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
 	"github.com/ssbc/go-ssb/message"
+	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/repo"
 )
 
@@ -40,8 +40,8 @@ type LegacyGossip struct {
 	repo repo.Interface
 
 	Id         refs.FeedRef
-	ReceiveLog margaret.Log
-	UserFeeds  multilog.MultiLog
+	ReceiveLog margaret.Log[*multimsg.MultiMessage]
+	UserFeeds  *roaring.MultiLog
 	WantList   ssb.ReplicationLister
 	Info       logging.Interface
 
@@ -89,9 +89,9 @@ func (g *LegacyGossip) StartLegacyFetching(ctx context.Context, e muxrpc.Endpoin
 	info := log.With(g.Info, "remote", remoteRef.ShortSigil(), "event", "gossiprx", "live", g.enableLiveStreaming)
 
 	if g.promisc {
-		hasCallee, err := multilog.Has(g.UserFeeds, storedrefs.Feed(remoteRef))
+		hasCallee, err := g.UserFeeds.Has(storedrefs.Feed(remoteRef))
 		if err != nil {
-			info.Log("handleConnect", "multilog.Has(callee)", "err", err)
+			info.Log("handleConnect", "UserFeeds.Has(callee)", "err", err)
 			return
 		}
 
@@ -201,40 +201,10 @@ func (g *LegacyGossip) HandleCall(
 				req.Stream.Close()
 				return
 			}
-
-			// TODO: write proper tests for this
-			// // see if there is a path from the wanted feed
-			// l, err := tg.MakeDijkstra(query.ID)
-			// if err != nil {
-			// 	if _, ok := errors.Cause(err).(graph.ErrNoSuchFrom); ok {
-			// 		dbgLog.Log("msg", "unknown remote")
-			// 		req.Stream.Close()
-			// 		return
-			// 	}
-			// 	closeIfErr(errors.Wrap(err, "graph dist lookup failed"))
-			// 	return
-			// }
-
-			// // to the remote requesting it
-			// path, dist := l.Dist(remote)
-			// if len(path) < 1 || len(path) > 4 {
-			// 	dbgLog.Log("msg", "requested feed doesnt know remote", "d", dist, "plen", len(path))
-			// 	req.Stream.Close()
-			// 	return
-			// }
-			// now we know that at least someone they know, knows the remote
-
-			// dbgLog.Log("msg", "feeds in range", "d", dist, "plen", len(path))
-			// } else {
-			// dbgLog.Log("msg", "feed access granted")
 		}
 
 		err = g.feedManager.CreateStreamHistory(ctx, snk, query)
 		if err != nil {
-			if luigi.IsEOS(err) {
-				req.Stream.Close()
-				return
-			}
 			err = fmt.Errorf("createHistoryStream failed: %w", err)
 			errLog.Log("err", err)
 			req.CloseWithError(err)

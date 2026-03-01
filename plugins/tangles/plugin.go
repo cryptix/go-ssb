@@ -13,11 +13,10 @@ import (
 	"time"
 
 	bmap "github.com/dgraph-io/sroar"
-	"github.com/ssbc/go-luigi"
 	"github.com/ssbc/go-muxrpc/v2"
-	"github.com/ssbc/margaret"
-	librarian "github.com/ssbc/margaret/indexes"
-	"github.com/ssbc/margaret/multilog/roaring"
+	margaret "github.com/ssbc/margaret/v2"
+	"github.com/ssbc/margaret/v2/multilog"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
 	"go.mindeco.de/log"
 	"go.mindeco.de/log/level"
 
@@ -26,8 +25,8 @@ import (
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/internal/mutil"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
-	"github.com/ssbc/go-ssb/internal/transform"
 	"github.com/ssbc/go-ssb/message"
+	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/private"
 )
 
@@ -35,7 +34,7 @@ type Plugin struct {
 	h muxrpc.Handler
 }
 
-func NewPlugin(logger log.Logger, getter ssb.Getter, rxlog margaret.Log, tangles, private *roaring.MultiLog, unboxer *private.Manager, isSelf ssb.Authorizer) *Plugin {
+func NewPlugin(logger log.Logger, getter ssb.Getter, rxlog margaret.Log[*multimsg.MultiMessage], tangles, private *roaring.MultiLog, unboxer *private.Manager, isSelf ssb.Authorizer) *Plugin {
 	mux := typemux.New(log.NewNopLogger())
 
 	mux.RegisterSource(muxrpc.Method{"tangles", "thread"}, repliesHandler{
@@ -51,18 +50,6 @@ func NewPlugin(logger log.Logger, getter ssb.Getter, rxlog margaret.Log, tangles
 		info: logger,
 	})
 
-	/* TODO: heads
-			mux.RegisterAsync(muxrpc.Method{"tangles", "heads"}, headsHandler{
-			rxlog:   rxlog,
-			tangles: threads,
-
-	  		// private utils
-			private: private,
-			unboxer: unboxer,
-			isSelf:  isSelf,
-		})
-	*/
-
 	return &Plugin{
 		h: &mux,
 	}
@@ -74,7 +61,7 @@ func (lt Plugin) Handler() muxrpc.Handler { return lt.h }
 
 type repliesHandler struct {
 	getter ssb.Getter
-	rxlog  margaret.Log
+	rxlog  margaret.Log[*multimsg.MultiMessage]
 
 	tangles *roaring.MultiLog
 	private *roaring.MultiLog
@@ -113,7 +100,6 @@ func (g repliesHandler) HandleSource(ctx context.Context, req *muxrpc.Request, s
 			return fmt.Errorf("expected 1 argument but got %d", n)
 		}
 		qry = qryarr[0]
-		// defaults?!
 	}
 
 	if qry.Limit == 0 {
@@ -132,16 +118,11 @@ func (g repliesHandler) HandleSource(ctx context.Context, req *muxrpc.Request, s
 
 	logger = log.With(logger, "root", qry.Root.ShortSigil())
 
-	// create toJSON sink
-	lsnk := transform.NewKeyValueWrapper(snk, qry.Keys)
-
 	// lookup address depending if we have a name for the tangle or not
 	addr := storedrefs.TangleV1(qry.Root)
 	if qry.Name != "" {
 		addr = storedrefs.TangleV2(qry.Name, qry.Root)
 	}
-
-	// TODO: needs same kind of refactor that messagesByType needs
 
 	if qry.Live {
 		if qry.Private {
@@ -152,14 +133,24 @@ func (g repliesHandler) HandleSource(ctx context.Context, req *muxrpc.Request, s
 			return fmt.Errorf("failed to load thread: %w", err)
 		}
 
-		src, err := mutil.Indirect(g.rxlog, threadLog).Query(margaret.Limit(int(qry.Limit)), margaret.Live(qry.Live), margaret.Reverse(qry.Reverse))
-		if err != nil {
-			return fmt.Errorf("tangle: failed to create query: %w", err)
+		resolved := mutil.Indirect(g.rxlog, threadLog)
+		qryOpts := []margaret.QueryOption{margaret.Limit(int(qry.Limit)), margaret.Reverse(qry.Reverse)}
+		if qry.Live {
+			qryOpts = append(qryOpts, margaret.Live(ctx))
 		}
+		qryIter := resolved.Query(qryOpts...)
 
-		err = luigi.Pump(ctx, lsnk, src)
-		if err != nil {
-			return fmt.Errorf("tangle: failed to pump msgs: %w", err)
+		snk.SetEncoding(muxrpc.TypeJSON)
+		for _, mm := range qryIter.Iter() {
+			if mm.Message == nil {
+				continue
+			}
+			if err := writeMessage(snk, mm.Message, qry.Keys); err != nil {
+				return fmt.Errorf("tangle: failed to write msg: %w", err)
+			}
+		}
+		if err := qryIter.Err(); err != nil {
+			return fmt.Errorf("tangle: query failed: %w", err)
 		}
 
 		return snk.Close()
@@ -172,21 +163,15 @@ func (g repliesHandler) HandleSource(ctx context.Context, req *muxrpc.Request, s
 		return snk.Close()
 	}
 
-	if qry.Private {
-		lsnk = g.unboxer.WrappedUnboxingSink(lsnk)
-	} else {
+	if !qry.Private {
 		// filter all boxed messages from the stream
-		box1, err := g.private.LoadInternalBitmap(librarian.Addr("meta:box1"))
+		box1, err := g.private.LoadInternalBitmap(multilog.Addr("meta:box1"))
 		if err != nil {
-			// TODO: compare not found
-			// return errors.Wrap(err, "failed to load bmap for box1")
 			box1 = bmap.NewBitmap()
 		}
 
-		box2, err := g.private.LoadInternalBitmap(librarian.Addr("meta:box2"))
+		box2, err := g.private.LoadInternalBitmap(multilog.Addr("meta:box2"))
 		if err != nil {
-			// TODO: compare not found
-			// return errors.Wrap(err, "failed to load bmap for box2")
 			box2 = bmap.NewBitmap()
 		}
 
@@ -236,21 +221,20 @@ func (g repliesHandler) HandleSource(ctx context.Context, req *muxrpc.Request, s
 	it := threadBmap.NewIterator()
 	for i := 0; i < threadBmap.GetCardinality(); i++ {
 		seq := int64(it.Next())
-		v, err := g.rxlog.Get(seq)
+		mm, err := g.rxlog.Get(seq)
 		if err != nil {
+			if margaret.IsErrNulled(err) {
+				continue
+			}
 			fmt.Fprintln(os.Stderr, "tangles failed to get seq:", seq, " with:", err)
 			continue
 		}
 
-		// skip nulled
-		if verr, ok := v.(error); ok && margaret.IsErrNulled(verr) {
+		if mm.Message == nil {
 			continue
 		}
 
-		msg, ok := v.(refs.Message)
-		if !ok {
-			return fmt.Errorf("not a mesg %T", v)
-		}
+		msg := mm.Message
 
 		var content = msg.ContentBytes()
 		if qry.Private {
@@ -312,6 +296,24 @@ func (g repliesHandler) HandleSource(ctx context.Context, req *muxrpc.Request, s
 	}
 	level.Debug(logger).Log("event", "messages streamed", "cnt", cnt, "took", time.Since(sorted))
 	return snk.Close()
+}
+
+// writeMessage encodes a message to the muxrpc sink.
+func writeMessage(w *muxrpc.ByteSink, msg refs.Message, keys bool) error {
+	if keys {
+		var kv refs.KeyValueRaw
+		kv.Key_ = msg.Key()
+		kv.Value = *msg.ValueContent()
+		kv.Timestamp = refs.Millisecs(msg.Received())
+		kvMsg, err := json.Marshal(kv)
+		if err != nil {
+			return fmt.Errorf("failed to encode key-value: %w", err)
+		}
+		_, err = w.Write(kvMsg)
+		return err
+	}
+	_, err := w.Write(msg.ValueContentJSON())
+	return err
 }
 
 type tangledPost struct {

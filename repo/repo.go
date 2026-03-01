@@ -7,8 +7,10 @@ package repo
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 
+	"github.com/dgraph-io/badger/v3"
 	"github.com/ssbc/go-ssb"
 	"github.com/ssbc/go-ssb/blobstore"
 )
@@ -26,6 +28,20 @@ type repo struct {
 
 func (r repo) GetPath(rel ...string) string {
 	return filepath.Join(append([]string{r.basePath}, rel...)...)
+}
+
+func OpenBadgerDB(path string) (*badger.DB, error) {
+	err := os.MkdirAll(path, 0700)
+	if err != nil {
+		return nil, fmt.Errorf("OpenBadgerDB: failed to create directory: %w", err)
+	}
+	opts := badger.DefaultOptions(path)
+	opts.Logger = nil
+	db, err := badger.Open(opts)
+	if err != nil {
+		return nil, fmt.Errorf("OpenBadgerDB: failed to open badger: %w", err)
+	}
+	return db, nil
 }
 
 func OpenBlobStore(r Interface) (ssb.BlobStore, error) {

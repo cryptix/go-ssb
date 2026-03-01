@@ -5,54 +5,42 @@
 package keys
 
 import (
-	"context"
 	"testing"
 
 	"github.com/dgraph-io/badger/v3"
 	"github.com/ssbc/go-ssb/repo"
-	librarian "github.com/ssbc/margaret/indexes"
-	libbadger "github.com/ssbc/margaret/indexes/badger"
 	"github.com/stretchr/testify/require"
-	"modernc.org/kv"
 )
 
 type opIndexNew struct {
-	DB   **badger.DB
-	Type interface{}
-
-	Index *librarian.SeqSetterIndex
+	DB    **badger.DB
+	Store **Store
 }
 
 func (op opIndexNew) Do(t *testing.T, env interface{}) {
-	*op.Index = libbadger.NewIndex(*op.DB, op.Type)
-	require.NotNil(t, *op.Index, "libbadger.NewIndex returned nil")
+	*op.Store = NewStore(*op.DB, nil)
+	require.NotNil(t, *op.Store, "NewStore returned nil")
 }
 
 type opIndexGet struct {
-	Index *librarian.SeqSetterIndex
-	Addr  librarian.Addr
+	Store  **Store
+	Scheme KeyScheme
+	ID     ID
 
-	ExpValue  interface{}
+	ExpValue  Recipients
 	ExpGetErr string
-	ExpObsErr string
 }
 
 func (op opIndexGet) Do(t *testing.T, env interface{}) {
-	obs, gerr := (*op.Index).Get(context.TODO(), op.Addr)
+	recps, err := (*op.Store).GetKeys(op.Scheme, op.ID)
 	if op.ExpGetErr == "" {
-		require.NoError(t, gerr, "unexpected error on idx.Get")
+		require.NoError(t, err, "unexpected error on store.GetKeys")
 	} else {
-		require.EqualError(t, gerr, op.ExpGetErr, "expected different error on idx.Get")
+		require.EqualError(t, err, op.ExpGetErr, "expected different error on store.GetKeys")
+		return
 	}
 
-	v, verr := obs.Value()
-	if op.ExpObsErr == "" {
-		require.NoError(t, verr, "unexpected error opening observable after idx.Get")
-	} else {
-		require.EqualError(t, verr, op.ExpObsErr, "expected different error opening observable after idx.Get")
-	}
-
-	require.Equal(t, op.ExpValue, v, "wrong value for addr:%q", op.Addr)
+	require.Equal(t, op.ExpValue, recps, "wrong value")
 }
 
 type opDBCreate struct {
@@ -67,55 +55,9 @@ func (op opDBCreate) Do(t *testing.T, env interface{}) {
 
 	*(op.DB), err = repo.OpenBadgerDB(op.Name)
 	if op.ExpErr == "" {
-		require.NoError(t, err, "unexpected error on kv.Create")
+		require.NoError(t, err, "unexpected error on db create")
 	} else {
-		require.EqualError(t, err, op.ExpErr, "expected different error on kv.Create")
-	}
-}
-
-type opDBOpen struct {
-	Name string
-
-	ExpErr string
-	DB     **badger.DB
-}
-
-func (op opDBOpen) Do(t *testing.T, env interface{}) {
-	var err error
-	*(op.DB), err = repo.OpenBadgerDB(op.Name)
-	if op.ExpErr == "" {
-		require.NoError(t, err, "unexpected error on kv.Open")
-	} else {
-		require.EqualError(t, err, op.ExpErr, "expected different error on kv.Open")
-	}
-}
-
-type opDBClose struct {
-	DB     *kv.DB
-	ExpErr string
-}
-
-func (op opDBClose) Do(t *testing.T, env interface{}) {
-	err := op.DB.Close()
-	if op.ExpErr == "" {
-		require.NoError(t, err, "error closing db")
-	} else {
-		require.EqualErrorf(t, err, op.ExpErr, "expected close error %q but got: %v", op.ExpErr, err)
-	}
-}
-
-type opDBSet struct {
-	DB         *kv.DB
-	Key, Value []byte
-	ExpErr     string
-}
-
-func (op opDBSet) Do(t *testing.T, env interface{}) {
-	err := op.DB.Set(op.Key, op.Value)
-	if op.ExpErr == "" {
-		require.NoError(t, err, "error setting value in db")
-	} else {
-		require.EqualErrorf(t, err, op.ExpErr, "expected error setting value in db %q but got: %v", op.ExpErr, err)
+		require.EqualError(t, err, op.ExpErr, "expected different error on db create")
 	}
 }
 

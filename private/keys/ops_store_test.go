@@ -11,7 +11,7 @@ import (
 )
 
 type opStoreSetKey struct {
-	Mgr    *Store
+	Mgr    **Store
 	Scheme KeyScheme
 	ID     ID
 	Key    Key
@@ -24,7 +24,7 @@ func (op opStoreSetKey) Do(t *testing.T, env interface{}) {
 		Key:    op.Key,
 		Scheme: op.Scheme,
 	}
-	err := op.Mgr.SetKey(op.ID, r)
+	err := (*op.Mgr).SetKey(op.ID, r)
 	if op.ExpErr == "" {
 		require.NoError(t, err, "unexpected error on mgr.SetKey")
 	} else {
@@ -33,7 +33,7 @@ func (op opStoreSetKey) Do(t *testing.T, env interface{}) {
 }
 
 type opStoreAddKey struct {
-	Mgr    *Store
+	Mgr    **Store
 	Scheme KeyScheme
 	ID     ID
 	Key    Key
@@ -42,12 +42,11 @@ type opStoreAddKey struct {
 }
 
 func (op opStoreAddKey) Do(t *testing.T, env interface{}) {
-
 	r := Recipient{
 		Key:    op.Key,
 		Scheme: op.Scheme,
 	}
-	err := op.Mgr.AddKey(op.ID, r)
+	err := (*op.Mgr).AddKey(op.ID, r)
 	if op.ExpErr == "" {
 		require.NoError(t, err, "unexpected error on mgr.AddKey")
 	} else {
@@ -56,7 +55,7 @@ func (op opStoreAddKey) Do(t *testing.T, env interface{}) {
 }
 
 type opStoreRmKeys struct {
-	Mgr    *Store
+	Mgr    **Store
 	Scheme KeyScheme
 	ID     ID
 
@@ -64,7 +63,7 @@ type opStoreRmKeys struct {
 }
 
 func (op opStoreRmKeys) Do(t *testing.T, env interface{}) {
-	err := op.Mgr.RmKeys(op.Scheme, op.ID)
+	err := (*op.Mgr).RmKeys(op.Scheme, op.ID)
 	if op.ExpErr == "" {
 		require.NoError(t, err, "unexpected error removing a key")
 	} else {
@@ -73,7 +72,7 @@ func (op opStoreRmKeys) Do(t *testing.T, env interface{}) {
 }
 
 type opStoreGetKeys struct {
-	Mgr    *Store
+	Mgr    **Store
 	Scheme KeyScheme
 	ID     ID
 
@@ -82,7 +81,7 @@ type opStoreGetKeys struct {
 }
 
 func (op opStoreGetKeys) Do(t *testing.T, _ interface{}) {
-	recps, err := op.Mgr.GetKeys(op.Scheme, op.ID)
+	recps, err := (*op.Mgr).GetKeys(op.Scheme, op.ID)
 	if op.ExpErr == "" {
 		require.NoError(t, err, "unexpected error querying keys")
 	} else {

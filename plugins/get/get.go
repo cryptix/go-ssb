@@ -15,7 +15,6 @@ import (
 	"github.com/ssbc/go-ssb"
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/private"
-	"github.com/ssbc/margaret"
 )
 
 type plugin struct {
@@ -26,11 +25,10 @@ func (p plugin) Name() string            { return "get" }
 func (p plugin) Method() muxrpc.Method   { return muxrpc.Method{"get"} }
 func (p plugin) Handler() muxrpc.Handler { return p.h }
 
-func New(g ssb.Getter, rxlog margaret.Log, unboxer *private.Manager) ssb.Plugin {
+func New(g ssb.Getter, unboxer *private.Manager) ssb.Plugin {
 	return plugin{
 		h: handler{
 			get:     g,
-			rxlog:   rxlog,
 			unboxer: unboxer,
 		},
 	}
@@ -38,7 +36,6 @@ func New(g ssb.Getter, rxlog margaret.Log, unboxer *private.Manager) ssb.Plugin 
 
 type handler struct {
 	get     ssb.Getter
-	rxlog   margaret.Log
 	unboxer *private.Manager
 }
 

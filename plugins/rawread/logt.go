@@ -12,25 +12,25 @@ import (
 	"time"
 
 	bmap "github.com/dgraph-io/sroar"
-	"github.com/ssbc/go-luigi"
 	"github.com/ssbc/go-muxrpc/v2"
-	"github.com/ssbc/margaret"
-	librarian "github.com/ssbc/margaret/indexes"
-	"github.com/ssbc/margaret/multilog/roaring"
+	margaret "github.com/ssbc/margaret/v2"
+	"github.com/ssbc/margaret/v2/multilog"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
 	"go.mindeco.de/log"
 	"go.mindeco.de/log/level"
 
 	"github.com/ssbc/go-muxrpc/v2/typemux"
 	"github.com/ssbc/go-ssb"
+	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/internal/mutil"
-	"github.com/ssbc/go-ssb/internal/transform"
 	"github.com/ssbc/go-ssb/message"
+	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/private"
 	"github.com/ssbc/go-ssb/repo"
 )
 
 type Plugin struct {
-	rxlog margaret.Log
+	rxlog margaret.Log[*multimsg.MultiMessage]
 	types *roaring.MultiLog
 
 	priv    *roaring.MultiLog
@@ -46,7 +46,7 @@ type Plugin struct {
 
 func NewByTypePlugin(
 	log log.Logger,
-	rootLog margaret.Log,
+	rootLog margaret.Log[*multimsg.MultiMessage],
 	tl *roaring.MultiLog,
 	pl *roaring.MultiLog,
 	pm *private.Manager,
@@ -124,14 +124,11 @@ func (g Plugin) HandleSource(ctx context.Context, req *muxrpc.Request, w *muxrpc
 
 	logger = log.With(logger, "type", qry.Type)
 
-	// create toJSON sink
-	snk := transform.NewKeyValueWrapper(w, qry.Keys)
+	w.SetEncoding(muxrpc.TypeJSON)
 
-	// wrap it into a counter for debugging
 	var cnt int
-	snk = newSinkCounter(&cnt, snk)
 
-	idxAddr := librarian.Addr("string:" + qry.Type)
+	idxAddr := multilog.Addr("string:" + qry.Type)
 	if qry.Live {
 		if qry.Private {
 			return fmt.Errorf("TODO: fix live && private")
@@ -141,24 +138,29 @@ func (g Plugin) HandleSource(ctx context.Context, req *muxrpc.Request, w *muxrpc
 			return fmt.Errorf("failed to load typed log: %w", err)
 		}
 
-		src, err := mutil.Indirect(g.rxlog, typed).Query(
+		resolved := mutil.Indirect(g.rxlog, typed)
+		qryOpts := []margaret.QueryOption{
 			margaret.Limit(int(qry.Limit)),
-			margaret.Live(qry.Live))
-		if err != nil {
-			return fmt.Errorf("logT: failed to qry tipe: %w", err)
+		}
+		if qry.Live {
+			qryOpts = append(qryOpts, margaret.Live(ctx))
+		}
+		qryIter := resolved.Query(qryOpts...)
+
+		for _, mm := range qryIter.Iter() {
+			if mm.Message == nil {
+				continue
+			}
+			if err := writeMessage(w, mm.Message, qry.Keys); err != nil {
+				return fmt.Errorf("logT: failed to write msg: %w", err)
+			}
+			cnt++
+		}
+		if err := qryIter.Err(); err != nil {
+			return fmt.Errorf("logT: failed to iterate msgs: %w", err)
 		}
 
-		// if qry.Private { TODO
-		// 	src = g.unboxedSrc(src)
-		// g.unboxer.WrappedUnboxingSink(snk)
-		// }
-
-		err = luigi.Pump(ctx, snk, src)
-		if err != nil {
-			return fmt.Errorf("logT: failed to pump msgs: %w", err)
-		}
-
-		return snk.Close()
+		return w.Close()
 	}
 
 	/* TODO: i'm skipping a fairly big refactor here to find out what works first.
@@ -171,24 +173,18 @@ func (g Plugin) HandleSource(ctx context.Context, req *muxrpc.Request, w *muxrpc
 	typed, err := g.types.LoadInternalBitmap(idxAddr)
 	if err != nil {
 		level.Warn(g.info).Log("event", "failed to load type bitmap", "err", err)
-		return snk.Close()
+		return w.Close()
 	}
 
-	if qry.Private {
-		snk = g.unboxer.WrappedUnboxingSink(snk)
-	} else {
+	if !qry.Private {
 		// filter all boxed messages from the stream
-		box1, err := g.priv.LoadInternalBitmap(librarian.Addr("meta:box1"))
+		box1, err := g.priv.LoadInternalBitmap(multilog.Addr("meta:box1"))
 		if err != nil {
-			// TODO: compare not found
-			// return errors.Wrap(err, "failed to load bmap for box1")
 			box1 = bmap.NewBitmap()
 		}
 
-		box2, err := g.priv.LoadInternalBitmap(librarian.Addr("meta:box2"))
+		box2, err := g.priv.LoadInternalBitmap(multilog.Addr("meta:box2"))
 		if err != nil {
-			// TODO: compare not found
-			// return errors.Wrap(err, "failed to load bmap for box2")
 			box2 = bmap.NewBitmap()
 		}
 
@@ -224,7 +220,7 @@ func (g Plugin) HandleSource(ctx context.Context, req *muxrpc.Request, w *muxrpc
 	level.Debug(logger).Log("event", "sorted seqs", "n", len(sort), "took", time.Since(start))
 
 	for _, res := range sort {
-		v, err := g.rxlog.Get(int64(res.Seq))
+		mm, err := g.rxlog.Get(int64(res.Seq))
 		if err != nil {
 			if margaret.IsErrNulled(err) {
 				continue
@@ -233,9 +229,44 @@ func (g Plugin) HandleSource(ctx context.Context, req *muxrpc.Request, w *muxrpc
 			continue
 		}
 
-		if err := snk.Pour(ctx, v); err != nil {
-			level.Warn(logger).Log("event", "messagesByType failed to send", "seq", res.Seq, "err", err)
-			break
+		if mm.Message == nil {
+			continue
+		}
+
+		msg := mm.Message
+		if qry.Private {
+			// try to decrypt
+			cleartext, dErr := g.unboxer.DecryptMessage(msg)
+			if dErr == nil {
+				var kv refs.KeyValueRaw
+				kv.Key_ = msg.Key()
+				kv.Value = *msg.ValueContent()
+				kv.Value.Content = cleartext
+				kv.Timestamp = refs.Millisecs(msg.Received())
+				kvMsg, err := json.Marshal(kv)
+				if err != nil {
+					level.Warn(logger).Log("event", "messagesByType failed to encode", "seq", res.Seq, "err", err)
+					continue
+				}
+				if _, err := w.Write(kvMsg); err != nil {
+					level.Warn(logger).Log("event", "messagesByType failed to send", "seq", res.Seq, "err", err)
+					break
+				}
+				cnt++
+			} else {
+				// not decryptable, send as-is
+				if err := writeMessage(w, msg, qry.Keys); err != nil {
+					level.Warn(logger).Log("event", "messagesByType failed to send", "seq", res.Seq, "err", err)
+					break
+				}
+				cnt++
+			}
+		} else {
+			if err := writeMessage(w, msg, qry.Keys); err != nil {
+				level.Warn(logger).Log("event", "messagesByType failed to send", "seq", res.Seq, "err", err)
+				break
+			}
+			cnt++
 		}
 
 		if qry.Limit >= 0 {
@@ -247,16 +278,23 @@ func (g Plugin) HandleSource(ctx context.Context, req *muxrpc.Request, w *muxrpc
 	}
 
 	level.Debug(logger).Log("event", "messages streamed", "cnt", cnt, "took", time.Since(sorted))
-	return snk.Close()
+	return w.Close()
 }
 
-func newSinkCounter(counter *int, sink luigi.Sink) luigi.FuncSink {
-	return func(ctx context.Context, v interface{}, err error) error {
+// writeMessage encodes a message to the muxrpc sink.
+func writeMessage(w *muxrpc.ByteSink, msg refs.Message, keys bool) error {
+	if keys {
+		var kv refs.KeyValueRaw
+		kv.Key_ = msg.Key()
+		kv.Value = *msg.ValueContent()
+		kv.Timestamp = refs.Millisecs(msg.Received())
+		kvMsg, err := json.Marshal(kv)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to encode key-value: %w", err)
 		}
-
-		*counter++
-		return sink.Pour(ctx, v)
+		_, err = w.Write(kvMsg)
+		return err
 	}
+	_, err := w.Write(msg.ValueContentJSON())
+	return err
 }

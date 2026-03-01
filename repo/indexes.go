@@ -12,34 +12,16 @@ import (
 	"regexp"
 
 	"github.com/dgraph-io/badger/v3"
-	librarian "github.com/ssbc/margaret/indexes"
-	libbadger "github.com/ssbc/margaret/indexes/badger"
+	"github.com/ssbc/margaret/v2/indexes"
+
+	"github.com/ssbc/go-ssb/message/multimsg"
 )
 
 const PrefixIndex = "indexes"
 
-func OpenIndex(db *badger.DB, name string, f func(librarian.SeqSetterIndex) librarian.SinkIndex) (librarian.Index, librarian.SinkIndex, error) {
-	seqSetter := libbadger.NewIndexWithKeyPrefix(db, 0, []byte("index"+name))
+func OpenIndex(db *badger.DB, name string, f func(indexes.SeqIndex) *indexes.SinkIndex[*multimsg.MultiMessage, int64]) (indexes.Index[int64], *indexes.SinkIndex[*multimsg.MultiMessage, int64], error) {
+	seqSetter := NewBadgerSeqIndex(db, []byte("index"+name))
 	return seqSetter, f(seqSetter), nil
-}
-
-type LibrarianIndexCreater func(*badger.DB) (librarian.SeqSetterIndex, librarian.SinkIndex)
-
-func OpenBadgerIndex(r Interface, name string, f LibrarianIndexCreater) (*badger.DB, librarian.SeqSetterIndex, librarian.SinkIndex, error) {
-	pth := r.GetPath(PrefixIndex, name, "db")
-	err := os.MkdirAll(pth, 0700)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("error making index directory: %w", err)
-	}
-
-	db, err := badger.Open(badgerOpts(pth))
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("db/idx: badger failed to open: %w", err)
-	}
-
-	idx, sinkidx := f(db)
-
-	return db, idx, sinkidx, nil
 }
 
 // utils

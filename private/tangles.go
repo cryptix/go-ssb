@@ -5,21 +5,21 @@
 package private
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 
-	"github.com/ssbc/go-luigi"
+	margaret "github.com/ssbc/margaret/v2"
+	"github.com/ssbc/margaret/v2/multilog"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
+
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/internal/mutil"
-	"github.com/ssbc/margaret"
-	librarian "github.com/ssbc/margaret/indexes"
 )
 
 func (mgr *Manager) getTangleState(root refs.MessageRef, tname string) refs.TanglePoint {
 	var h = make([]byte, 32)
 	root.CopyHashTo(h)
-	addr := librarian.Addr(append([]byte("v2:"+tname+":"), h...))
+	addr := multilog.Addr(append([]byte("v2:"+tname+":"), h...))
 	thandle, err := mgr.tangles.Get(addr)
 	if err != nil {
 		return refs.TanglePoint{Root: &root, Previous: []refs.MessageRef{root}}
@@ -35,30 +35,19 @@ func (mgr *Manager) getTangleState(root refs.MessageRef, tname string) refs.Tang
 	return refs.TanglePoint{Root: &root, Previous: heads}
 }
 
-func (mgr *Manager) getLooseEnds(l margaret.Log, tname string) (refs.MessageRefs, error) {
-	src, err := mutil.Indirect(mgr.receiveLog, l).Query()
-	if err != nil {
-		return nil, err
-	}
-	todoCtx := context.TODO()
-	var tps []refs.TangledPost
-	for {
-		src, err := src.Next(todoCtx)
-		if err != nil {
-			if luigi.IsEOS(err) {
-				break
-			}
-			return nil, err
-		}
+func (mgr *Manager) getLooseEnds(l margaret.Log[*roaring.Seq], tname string) (refs.MessageRefs, error) {
+	qry := mutil.Indirect(mgr.receiveLog, l).Query()
 
-		msg, ok := src.(refs.Message)
-		if !ok {
-			return nil, fmt.Errorf("not a mesg %T", src)
+	var tps []refs.TangledPost
+	for _, mm := range qry.Iter() {
+		if mm.Message == nil {
+			continue
 		}
+		msg := mm.Message
 
 		content, err := mgr.DecryptBox2Message(msg)
 		if err != nil {
-			// fmt.Println("not for us?", err) // or deleted key?
+			// not for us? or deleted key?
 			continue
 		}
 
@@ -72,6 +61,9 @@ func (mgr *Manager) getLooseEnds(l margaret.Log, tname string) (refs.MessageRefs
 		}
 
 		tps = append(tps, refs.TangledPost(tangledPost{MessageRef: msg.Key(), Tangles: p.Tangles}))
+	}
+	if err := qry.Err(); err != nil {
+		return nil, fmt.Errorf("getLooseEnds: query error: %w", err)
 	}
 
 	sorter := refs.ByPrevious{Items: tps, TangleName: tname}

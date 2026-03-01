@@ -10,14 +10,12 @@ import (
 	"fmt"
 
 	"github.com/ssbc/go-muxrpc/v2"
-	"github.com/ssbc/margaret"
+	margaret "github.com/ssbc/margaret/v2"
 	"go.mindeco.de/log/level"
 	"go.mindeco.de/logging"
 
-	"github.com/ssbc/go-luigi"
 	"github.com/ssbc/go-ssb"
 	refs "github.com/ssbc/go-ssb-refs"
-	"github.com/ssbc/go-ssb/internal/transform"
 	"github.com/ssbc/go-ssb/message"
 	"github.com/ssbc/go-ssb/private"
 )
@@ -27,7 +25,7 @@ type handler struct {
 
 	author  refs.FeedRef
 	publish ssb.Publisher
-	read    margaret.Log
+	read    *private.UnboxedLog
 
 	mngr *private.Manager
 }
@@ -149,17 +147,27 @@ func (h handler) handleRead(ctx context.Context, req *muxrpc.Request, snk *muxrp
 	// well, sorry - the client lib needs better handling of receiving types
 	qry.Keys = true
 
-	src, err := h.read.Query(
+	qryOpts := []margaret.QueryOption{
 		margaret.Gte(qry.Seq),
 		margaret.Limit(int(qry.Limit)),
-		margaret.Live(qry.Live))
-	if err != nil {
-		return fmt.Errorf("private/read: failed to create query: %w", err)
 	}
+	if qry.Live {
+		qryOpts = append(qryOpts, margaret.Live(ctx))
+	}
+	qryIter := h.read.Query(qryOpts...)
 
-	err = luigi.Pump(ctx, transform.NewKeyValueWrapper(snk, qry.Keys), src)
-	if err != nil {
-		return fmt.Errorf("private/read: message pump failed: %w", err)
+	snk.SetEncoding(muxrpc.TypeJSON)
+	for _, kv := range qryIter.Iter() {
+		kvMsg, err := json.Marshal(kv)
+		if err != nil {
+			return fmt.Errorf("private/read: failed to marshal message: %w", err)
+		}
+		if _, err := snk.Write(kvMsg); err != nil {
+			return fmt.Errorf("private/read: failed to write message: %w", err)
+		}
+	}
+	if err := qryIter.Err(); err != nil {
+		return fmt.Errorf("private/read: query failed: %w", err)
 	}
 	req.Close()
 	return nil

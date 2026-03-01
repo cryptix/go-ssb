@@ -27,7 +27,6 @@ import (
 	_ "net/http/pprof"
 
 	"github.com/ssbc/go-muxrpc/v2/debug"
-	"github.com/ssbc/margaret/multilog"
 	"go.mindeco.de/log/level"
 	"go.mindeco.de/logging"
 
@@ -515,7 +514,7 @@ func runSbot() error {
 		}
 
 		for _, blocked := range lst {
-			isStored, err := multilog.Has(uf, storedrefs.Feed(blocked))
+			isStored, err := uf.Has(storedrefs.Feed(blocked))
 			if err != nil {
 				return fmt.Errorf("blocked lookup in multilog: %w", err)
 			}

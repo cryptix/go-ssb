@@ -5,7 +5,6 @@
 package sbot
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"os"
@@ -13,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ssbc/go-luigi"
 	refs "github.com/ssbc/go-ssb-refs"
 
 	"github.com/ssbc/go-ssb/internal/storedrefs"
@@ -23,35 +21,22 @@ import (
 
 // NullFeed overwrites all the entries from ref in repo with zeros
 func (s *Sbot) NullFeed(ref refs.FeedRef) error {
-	ctx := context.Background()
-
 	feedAddr := storedrefs.Feed(ref)
 	userSeqs, err := s.Users.Get(feedAddr)
 	if err != nil {
 		return fmt.Errorf("NullFeed: failed to open log for feed argument: %w", err)
 	}
 
-	src, err := userSeqs.Query()
-	if err != nil {
-		return fmt.Errorf("NullFeed: failed create user seqs query: %w", err)
-	}
-
-	for {
-		v, err := src.Next(ctx)
-		if err != nil {
-			if luigi.IsEOS(err) {
-				break
-			}
-			return err
-		}
-		seq, ok := v.(int64)
-		if !ok {
-			return fmt.Errorf("NullFeed: not a sequence from userlog query")
-		}
+	qry := userSeqs.Query()
+	for _, seqEntry := range qry.Iter() {
+		seq := int64(*seqEntry)
 		err = s.ReceiveLog.Null(seq)
 		if err != nil {
 			return err
 		}
+	}
+	if err := qry.Err(); err != nil {
+		return fmt.Errorf("NullFeed: query error: %w", err)
 	}
 
 	err = s.Users.Delete(feedAddr)
@@ -97,18 +82,6 @@ func DropIndicies(r repo.Interface) error {
 			return err
 		}
 	}
-	// TODO: shared mlog
-	// var badger = []string{
-	// 	indexes.FolderNameContacts,
-	// }
-	// for _, i := range badger {
-	// 	dbPath := r.GetPath(repo.PrefixIndex, i)
-	// 	err := os.RemoveAll(dbPath)
-	// 	if err != nil {
-	// 		err = fmt.Errorf("mkdir error for %q: %w", dbPath, err)
-	// 		return err
-	// 	}
-	// }
 	log.Println("removed index folders")
 	return nil
 }

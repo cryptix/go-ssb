@@ -19,7 +19,6 @@ import (
 	"github.com/ssbc/go-ssb/internal/storedrefs"
 	"github.com/ssbc/go-ssb/message"
 	"github.com/ssbc/go-ssb/sbot"
-	"github.com/ssbc/margaret"
 	"github.com/stretchr/testify/require"
 )
 

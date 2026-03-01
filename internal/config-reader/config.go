@@ -58,7 +58,7 @@ type SbotCliConfig struct {
 }
 
 type MergedConfig struct {
-	GoSbot SbotConfig `json:"go-sbot"`
+	GoSbot  SbotConfig    `json:"go-sbot"`
 	SbotCli SbotCliConfig `json:"sbotcli"`
 }
 

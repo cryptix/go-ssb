@@ -16,8 +16,8 @@ import (
 	"go.mindeco.de/log"
 
 	"github.com/ssbc/go-muxrpc/v2"
-	"github.com/ssbc/margaret"
-	"github.com/ssbc/margaret/multilog"
+	margaret "github.com/ssbc/margaret/v2"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
 	"go.mindeco.de/log/level"
 	"go.mindeco.de/logging"
 
@@ -25,6 +25,7 @@ import (
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/internal/statematrix"
 	"github.com/ssbc/go-ssb/message"
+	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/plugins/gossip"
 )
 
@@ -32,8 +33,8 @@ type MUXRPCHandler struct {
 	info logging.Interface
 
 	self      refs.FeedRef
-	rootLog   margaret.Log
-	userFeeds multilog.MultiLog
+	rootLog   margaret.Log[*multimsg.MultiMessage]
+	userFeeds *roaring.MultiLog
 
 	livefeeds *gossip.FeedManager
 

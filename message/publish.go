@@ -12,10 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ssbc/go-luigi"
 	"github.com/ssbc/go-metafeed"
-	"github.com/ssbc/margaret"
-	"github.com/ssbc/margaret/multilog"
+
+	margaret "github.com/ssbc/margaret/v2"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
 
 	gabbygrove "github.com/ssbc/go-gabbygrove"
 	"github.com/ssbc/go-ssb"
@@ -23,68 +23,19 @@ import (
 	"github.com/ssbc/go-ssb/internal/mutil"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
 	"github.com/ssbc/go-ssb/message/legacy"
+	"github.com/ssbc/go-ssb/message/multimsg"
 )
 
 type publishLog struct {
-	mu         sync.Mutex
-	byAuthor   margaret.Log
-	receiveLog margaret.Log
+	mu                     sync.Mutex
+	byAuthor               margaret.Log[*roaring.Seq]
+	receiveLog             *multimsg.WrappedLog
 	waitForIndexesCallback func()
 
 	create creater
 }
 
 func (pl *publishLog) Publish(content interface{}) (refs.Message, error) {
-	seq, err := pl.Append(content)
-	if err != nil {
-		return nil, err
-	}
-
-	val, err := pl.receiveLog.Get(seq)
-	if err != nil {
-		return nil, fmt.Errorf("publish: failed to get new stored message: %w", err)
-	}
-
-	kv, ok := val.(refs.Message)
-	if !ok {
-		return nil, fmt.Errorf("publish: unsupported keyer %T", val)
-	}
-
-	return kv, nil
-}
-
-func (pl publishLog) Changes() luigi.Observable {
-	return pl.byAuthor.Changes()
-}
-
-func (pl publishLog) Seq() int64 {
-	if pl.waitForIndexesCallback != nil {
-		pl.waitForIndexesCallback()
-	}
-
-	return pl.byAuthor.Seq()
-}
-
-// Get retreives the message object by traversing the authors sublog to the root log
-func (pl publishLog) Get(s int64) (interface{}, error) {
-	idxv, err := pl.byAuthor.Get(s)
-	if err != nil {
-		return nil, fmt.Errorf("publish get: failed to retreive sequence for the root log: %w", err)
-	}
-
-	msgv, err := pl.receiveLog.Get(idxv.(int64))
-	if err != nil {
-		return nil, fmt.Errorf("publish get: failed to retreive message from rootlog: %w", err)
-	}
-	return msgv, nil
-}
-
-func (pl publishLog) Query(qry ...margaret.QuerySpec) (luigi.Source, error) {
-	return mutil.Indirect(pl.receiveLog, pl.byAuthor).Query(qry...)
-}
-
-func (pl *publishLog) Append(val interface{}) (int64, error) {
-	// wait for indexes to catch up before pulling a mutex so we're not locking unnecessarily
 	if pl.waitForIndexesCallback != nil {
 		pl.waitForIndexesCallback()
 	}
@@ -100,37 +51,74 @@ func (pl *publishLog) Append(val interface{}) (int64, error) {
 
 	seq := pl.byAuthor.Seq()
 
-	currRootSeq, err := pl.byAuthor.Get(seq)
-	if err != nil && !luigi.IsEOS(err) {
-		return -2, fmt.Errorf("publishLog: failed to retreive current msg: %w", err)
-	}
-	if luigi.IsEOS(err) { // new feed
+	if seq < 0 {
+		// new feed
 		nextSequence = 1
 	} else {
-		currMM, err := pl.receiveLog.Get(currRootSeq.(int64))
+		rootSeqVal, err := pl.byAuthor.Get(seq)
 		if err != nil {
-			return -2, fmt.Errorf("publishLog: failed to establish current seq: %w", err)
+			return nil, fmt.Errorf("publishLog: failed to retrieve current msg: %w", err)
 		}
-		mm, ok := currMM.(refs.Message)
-		if !ok {
-			return -2, fmt.Errorf("publishLog: invalid value at sequence %v: %T", seq, currMM)
+		mm, err := pl.receiveLog.Get(int64(*rootSeqVal))
+		if err != nil {
+			return nil, fmt.Errorf("publishLog: failed to establish current seq: %w", err)
 		}
-		nextPrevious = mm.Key()
-		nextSequence = mm.Seq() + 1
+		msg := mm.Message
+		nextPrevious = msg.Key()
+		nextSequence = msg.Seq() + 1
 	}
 
-	nextMsg, err := pl.create.Create(val, nextPrevious, nextSequence)
+	nextMsg, err := pl.create.Create(content, nextPrevious, nextSequence)
 	if err != nil {
-		return -2, fmt.Errorf("failed to create next msg: %w", err)
+		return nil, fmt.Errorf("failed to create next msg: %w", err)
 	}
 
-	rlSeq, err := pl.receiveLog.Append(nextMsg)
+	rlSeq, err := pl.receiveLog.AppendMessage(nextMsg)
 	if err != nil {
-		return -2, fmt.Errorf("failed to append new msg: %w", err)
+		return nil, fmt.Errorf("failed to append new msg: %w", err)
 	}
 
-	return rlSeq, nil
+	mm, err := pl.receiveLog.Get(rlSeq)
+	if err != nil {
+		return nil, fmt.Errorf("publish: failed to get new stored message: %w", err)
+	}
+
+	return mm.Message, nil
 }
+
+func (pl *publishLog) Seq() int64 {
+	if pl.waitForIndexesCallback != nil {
+		pl.waitForIndexesCallback()
+	}
+
+	return pl.byAuthor.Seq()
+}
+
+// Get retrieves the message object by traversing the authors sublog to the root log
+func (pl *publishLog) Get(s int64) (*multimsg.MultiMessage, error) {
+	rootSeqVal, err := pl.byAuthor.Get(s)
+	if err != nil {
+		return nil, fmt.Errorf("publish get: failed to retrieve sequence for the root log: %w", err)
+	}
+
+	mm, err := pl.receiveLog.Get(int64(*rootSeqVal))
+	if err != nil {
+		return nil, fmt.Errorf("publish get: failed to retrieve message from rootlog: %w", err)
+	}
+	return mm, nil
+}
+
+func (pl *publishLog) Query(opts ...margaret.QueryOption) margaret.QueryIterator[*multimsg.MultiMessage] {
+	return mutil.Indirect(pl.receiveLog, pl.byAuthor).Query(opts...)
+}
+
+// Append adds a raw MultiMessage to the receive log.
+// For normal publishing, use Publish instead.
+func (pl *publishLog) Append(mm *multimsg.MultiMessage) (int64, error) {
+	return pl.receiveLog.Append(mm)
+}
+
+func (pl *publishLog) Close() error { return nil }
 
 // OpenPublishLog needs the base datastore (root or receive log - offset2)
 // and the userfeeds with all the sublog and uses the passed keypair to find the corresponding user feed
@@ -138,7 +126,7 @@ func (pl *publishLog) Append(val interface{}) (int64, error) {
 // these messages are constructed in the legacy SSB way: The poured object is JSON v8-like pretty printed and then NaCL signed,
 // then it's pretty printed again (now with the signature inside the message) to construct it's SHA256 hash,
 // which is used to reference it (by replys and it's previous)
-func OpenPublishLog(receiveLog margaret.Log, authorLogs multilog.MultiLog, kp ssb.KeyPair, opts ...PublishOption) (ssb.Publisher, error) {
+func OpenPublishLog(receiveLog *multimsg.WrappedLog, authorLogs *roaring.MultiLog, kp ssb.KeyPair, opts ...PublishOption) (ssb.Publisher, error) {
 	authorLog, err := authorLogs.Get(storedrefs.Feed(kp.ID()))
 	if err != nil {
 		return nil, fmt.Errorf("publish: failed to open sublog for author: %w", err)

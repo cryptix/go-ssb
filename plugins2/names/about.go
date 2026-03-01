@@ -6,7 +6,7 @@ package names
 
 import (
 	"bytes"
-	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -15,12 +15,11 @@ import (
 	"time"
 
 	"github.com/dgraph-io/badger/v3"
-	"github.com/ssbc/margaret"
-	librarian "github.com/ssbc/margaret/indexes"
-	libbadger "github.com/ssbc/margaret/indexes/badger"
+	margaret "github.com/ssbc/margaret/v2"
 
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/client"
+	"github.com/ssbc/go-ssb/message/multimsg"
 )
 
 type aboutStore struct {
@@ -48,7 +47,7 @@ func (ab aboutStore) startIndexing() {
 }
 
 func (ab aboutStore) doneIndexing() {
-	time.AfterFunc(100 * time.Millisecond, func() {
+	time.AfterFunc(100*time.Millisecond, func() {
 		idxInSync.Done()
 	})
 }
@@ -70,7 +69,13 @@ func (ab aboutStore) ImageFor(ref *refs.FeedRef) (*refs.BlobRef, error) {
 		}
 
 		err = it.Value(func(v []byte) error {
-			newBlobR, err := refs.ParseBlobRef(string(v))
+			// values are stored as JSON strings, so unmarshal first
+			var blobStr string
+			if err := json.Unmarshal(v, &blobStr); err != nil {
+				// fallback: try raw string for backwards compatibility
+				blobStr = string(v)
+			}
+			newBlobR, err := refs.ParseBlobRef(blobStr)
 			if err != nil {
 				return err
 			}
@@ -147,8 +152,6 @@ func (ab aboutStore) CollectedFor(ref refs.FeedRef) (*AboutInfo, error) {
 
 	addr := append(idxKeyPrefix, []byte(ref.Sigil()+":")...)
 
-	// direct badger magic
-	// most of this feels like to direct k:v magic to be honest
 	var reduced AboutInfo
 	reduced.Name.Prescribed = make(map[string]int)
 	reduced.Description.Prescribed = make(map[string]int)
@@ -219,42 +222,96 @@ func (ab aboutStore) CollectedFor(ref refs.FeedRef) (*AboutInfo, error) {
 
 const FolderNameAbout = "about"
 
-func (plug *Plugin) OpenSharedIndex(db *badger.DB) (librarian.Index, librarian.SinkIndex) {
-	aboutIdx := libbadger.NewIndexWithKeyPrefix(db, 0, idxKeyPrefix)
+// aboutLogIndexer processes about messages and stores name/description/image data in badger.
+type aboutLogIndexer struct {
+	db     *badger.DB
+	seqKey []byte
+	about  aboutStore
+}
 
+// OpenSharedIndex creates the about index backed by the given badger database.
+func (plug *Plugin) OpenSharedIndex(db *badger.DB) *aboutLogIndexer {
 	plug.about = aboutStore{db}
 
 	plug.about.startIndexing()
 	defer plug.about.doneIndexing()
 
-	update := librarian.NewSinkIndex(plug.about.updateAboutMessage, aboutIdx)
-
-	return aboutIdx, update
+	return &aboutLogIndexer{
+		db:     db,
+		seqKey: append(append([]byte(nil), idxKeyPrefix...), []byte("__seq")...),
+		about:  plug.about,
+	}
 }
 
-func (ab aboutStore) updateAboutMessage(ctx context.Context, seq int64, msgv interface{}, idx librarian.SetterIndex) error {
-	var msg refs.Message
-
-	ab.startIndexing()
-	defer ab.doneIndexing()
-
-	switch tv := msgv.(type) {
-	case refs.Message:
-		msg = tv
-	case error:
-		if margaret.IsErrNulled(tv) {
-			return nil
+func (ai *aboutLogIndexer) lastProcessedSeq() int64 {
+	var val int64 = margaret.SeqEmpty
+	_ = ai.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(ai.seqKey)
+		if err != nil {
+			return err
 		}
-		return fmt.Errorf("about(%d): unhandled error type (%T) from index: %w", seq, tv, tv)
-	default:
-		return fmt.Errorf("about(%d): wrong msgT: %T", seq, msgv)
+		return item.Value(func(data []byte) error {
+			if len(data) == 8 {
+				val = int64(binary.BigEndian.Uint64(data))
+			}
+			return nil
+		})
+	})
+	return val
+}
+
+func (ai *aboutLogIndexer) setLastProcessedSeq(seq int64) {
+	_ = ai.db.Update(func(txn *badger.Txn) error {
+		var buf [8]byte
+		binary.BigEndian.PutUint64(buf[:], uint64(seq))
+		return txn.Set(ai.seqKey, buf[:])
+	})
+}
+
+// Index processes all unprocessed about messages from the log.
+func (ai *aboutLogIndexer) Index(logV margaret.Log[*multimsg.MultiMessage]) error {
+	ai.about.startIndexing()
+	defer ai.about.doneIndexing()
+
+	lastSeq := ai.lastProcessedSeq()
+	var opts []margaret.QueryOption
+	if lastSeq >= 0 {
+		opts = append(opts, margaret.Gt(lastSeq))
 	}
+	qry := logV.Query(opts...)
+	for seq, mm := range qry.Iter() {
+		if mm.Message == nil {
+			ai.setLastProcessedSeq(seq)
+			continue
+		}
+		if err := ai.updateAboutMessage(mm.Message); err != nil {
+			return err
+		}
+		ai.setLastProcessedSeq(seq)
+	}
+	return qry.Err()
+}
+
+func (ai *aboutLogIndexer) Close() error { return nil }
+
+func (ai *aboutLogIndexer) setAboutField(addr string, val string) error {
+	key := append(append([]byte(nil), idxKeyPrefix...), []byte(addr)...)
+	jsonVal, err := json.Marshal(val)
+	if err != nil {
+		return err
+	}
+	return ai.db.Update(func(txn *badger.Txn) error {
+		return txn.Set(key, jsonVal)
+	})
+}
+
+func (ai *aboutLogIndexer) updateAboutMessage(msg refs.Message) error {
+	ai.about.startIndexing()
+	defer ai.about.doneIndexing()
 
 	var aboutMSG refs.About
 	err := json.Unmarshal(msg.ContentBytes(), &aboutMSG)
 	if err != nil {
-		// nothing to do with this message
-		// TODO: git repos and gathering use about messages for their names
 		return nil
 	}
 
@@ -264,22 +321,18 @@ func (ab aboutStore) updateAboutMessage(ctx context.Context, seq int64, msgv int
 	addr += msg.Author().Sigil()
 	addr += ":"
 
-	var val string
 	if aboutMSG.Name != "" {
-		val = aboutMSG.Name
-		if err := idx.Set(ctx, librarian.Addr(addr+"name"), val); err != nil {
+		if err := ai.setAboutField(addr+"name", aboutMSG.Name); err != nil {
 			return fmt.Errorf("db/idx about: failed to update name: %w", err)
 		}
 	}
 	if aboutMSG.Description != "" {
-		val = aboutMSG.Description
-		if err := idx.Set(ctx, librarian.Addr(addr+"description"), val); err != nil {
+		if err := ai.setAboutField(addr+"description", aboutMSG.Description); err != nil {
 			return fmt.Errorf("db/idx about: failed to update description: %w", err)
 		}
 	}
 	if aboutMSG.Image != nil {
-		val = aboutMSG.Image.Sigil()
-		if err := idx.Set(ctx, librarian.Addr(addr+"image"), val); err != nil {
+		if err := ai.setAboutField(addr+"image", aboutMSG.Image.Sigil()); err != nil {
 			return fmt.Errorf("db/idx about: failed to update image: %w", err)
 		}
 	}

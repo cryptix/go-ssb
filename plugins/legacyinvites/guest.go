@@ -97,13 +97,7 @@ func (h acceptHandler) HandleCall(ctx context.Context, req *muxrpc.Request) {
 	contactWithNote.Note = st.Note
 	contactWithNote.Contact = refs.NewContactFollow(arg.Feed)
 
-	seq, err := h.service.publish.Append(contactWithNote)
-	if err != nil {
-		req.CloseWithError(fmt.Errorf("invite/accept: failed to publish invite accept (%w)", err))
-		return
-	}
-
-	msgv, err := h.service.receiveLog.Get(seq)
+	msg, err := h.service.publish.Publish(contactWithNote)
 	if err != nil {
 		req.CloseWithError(fmt.Errorf("invite/accept: failed to publish invite accept (%w)", err))
 		return
@@ -111,7 +105,7 @@ func (h acceptHandler) HandleCall(ctx context.Context, req *muxrpc.Request) {
 
 	h.service.replicator.Replicate(arg.Feed)
 
-	req.Return(ctx, msgv)
+	req.Return(ctx, msg.ValueContentJSON())
 
 	h.service.logger.Log("invite", "used")
 }

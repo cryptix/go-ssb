@@ -26,12 +26,12 @@ unixsock = "/tmp/testsocket"
 timeout = "3600s"
 `
 	expectedConfig := config.SbotCliConfig{
-		ShsCap:             "C80ZE1AsIGuRehUpiHXCRt3akFJzUTKqXEJ7i30OjNI=",
-		Addr:               "localhost:12345",
-		RemoteKey:          "@QlCTpvY7p9ty2yOFrv1WU1AE88aoQc4Y7wYal7PFc+w=.ed25519",
-		Key:                "/tmp/testkey",
-		UnixSock:           "/tmp/testsocket",
-		Timeout:            "3600s",
+		ShsCap:    "C80ZE1AsIGuRehUpiHXCRt3akFJzUTKqXEJ7i30OjNI=",
+		Addr:      "localhost:12345",
+		RemoteKey: "@QlCTpvY7p9ty2yOFrv1WU1AE88aoQc4Y7wYal7PFc+w=.ed25519",
+		Key:       "/tmp/testkey",
+		UnixSock:  "/tmp/testsocket",
+		Timeout:   "3600s",
 	}
 	testPath := filepath.Join(".", "testrun", t.Name())
 	r.NoError(os.RemoveAll(testPath), "remove testrun folder")
@@ -52,12 +52,12 @@ timeout = "3600s"
 func TestUnmarshalConfig(t *testing.T) {
 	r := require.New(t)
 	config := config.SbotCliConfig{
-		ShsCap:             "C80ZE1AsIGuRehUpiHXCRt3akFJzUTKqXEJ7i30OjNI=",
-		Addr:               "localhost:12345",
-		RemoteKey:          "@QlCTpvY7p9ty2yOFrv1WU1AE88aoQc4Y7wYal7PFc+w=.ed25519",
-		Key:                "/tmp/testkey",
-		UnixSock:           "/tmp/testsocket",
-		Timeout:            "3600s",
+		ShsCap:    "C80ZE1AsIGuRehUpiHXCRt3akFJzUTKqXEJ7i30OjNI=",
+		Addr:      "localhost:12345",
+		RemoteKey: "@QlCTpvY7p9ty2yOFrv1WU1AE88aoQc4Y7wYal7PFc+w=.ed25519",
+		Key:       "/tmp/testkey",
+		UnixSock:  "/tmp/testsocket",
+		Timeout:   "3600s",
 	}
 	b, err := json.MarshalIndent(config, "", "  ")
 	r.NoError(err)
@@ -73,4 +73,3 @@ func TestUnmarshalConfig(t *testing.T) {
 		r.True(strings.Contains(configStr, expected), expected)
 	}
 }
-

@@ -9,19 +9,19 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/ssbc/go-luigi"
 	"github.com/ssbc/go-ssb"
 	"github.com/ssbc/go-ssb/internal/mutil"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
+	"github.com/ssbc/go-ssb/message/multimsg"
 
 	"github.com/ssbc/go-muxrpc/v2"
 	refs "github.com/ssbc/go-ssb-refs"
-	"github.com/ssbc/margaret"
-	"github.com/ssbc/margaret/multilog/roaring"
+	margaret "github.com/ssbc/margaret/v2"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
 )
 
 type getTangleHandler struct {
-	rxlog margaret.Log
+	rxlog margaret.Log[*multimsg.MultiMessage]
 
 	get   ssb.Getter
 	roots *roaring.MultiLog
@@ -51,16 +51,18 @@ func (h getTangleHandler) HandleAsync(ctx context.Context, req *muxrpc.Request) 
 		return nil, fmt.Errorf("getTangle: failed to load thread: %w", err)
 	}
 
-	src, err := mutil.Indirect(h.rxlog, threadLog).Query()
-	if err != nil {
-		return nil, fmt.Errorf("getTangle: failed to qry tipe: %w", err)
+	resolved := mutil.Indirect(h.rxlog, threadLog)
+	qry := resolved.Query()
+
+	for _, mm := range qry.Iter() {
+		if mm.Message == nil {
+			continue
+		}
+		vals = append(vals, mm.Message.ValueContentJSON())
+	}
+	if err := qry.Err(); err != nil {
+		return nil, fmt.Errorf("getTangle: failed to read thread msgs: %w", err)
 	}
 
-	snk := luigi.NewSliceSink(&vals)
-	err = luigi.Pump(ctx, snk, src)
-	if err != nil {
-		return nil, fmt.Errorf("getTangle: failed to pump msgs: %w", err)
-	}
-	return nil, fmt.Errorf("partial: TODO refactor")
 	return vals, nil
 }

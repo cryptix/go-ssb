@@ -7,12 +7,10 @@ package sbot
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"time"
 
-	"github.com/ssbc/go-luigi"
-	"github.com/ssbc/margaret"
+	margaret "github.com/ssbc/margaret/v2"
 	"go.mindeco.de/log"
 	"go.mindeco.de/log/level"
 
@@ -70,7 +68,7 @@ func (s *Sbot) newGraphReplicator() (*graphReplicator, error) {
 
 	// update for new messages but only once they didnt change in a while
 	// meaning, not while sync is busy with new incoming messages
-	go debounce(s.rootCtx, 3*time.Second, s.ReceiveLog.Changes(), update)
+	go debounce(s.rootCtx, 3*time.Second, s.ReceiveLog, update)
 
 	return &r, nil
 }
@@ -110,31 +108,40 @@ func (r *graphReplicator) makeUpdater(log log.Logger, self refs.FeedRef, hopCoun
 	}
 }
 
-func debounce(ctx context.Context, interval time.Duration, obs luigi.Observable, work func()) {
+// seqer is a minimal interface for checking the current sequence of a log.
+type seqer interface {
+	Seq() int64
+}
+
+// debounce watches for changes in the receive log and calls work() after interval of no changes.
+func debounce(ctx context.Context, interval time.Duration, rxlog seqer, work func()) {
 	var seqMu sync.Mutex
 	var seq = margaret.SeqEmpty
 	timer := time.NewTimer(interval)
 
-	handle := luigi.FuncSink(func(ctx context.Context, val interface{}, err error) error {
-		if err != nil {
-			return err
+	// poll the log sequence periodically
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				newSeq := rxlog.Seq()
+				seqMu.Lock()
+				if newSeq != seq {
+					seq = newSeq
+					timer.Reset(interval)
+				}
+				seqMu.Unlock()
+			}
 		}
-		newSeq, ok := val.(int64)
-		if !ok {
-			return fmt.Errorf("graph rebuild debounce: wrong type: %T", val)
-		}
-		seqMu.Lock()
-		seq = newSeq
-		timer.Reset(interval)
-		seqMu.Unlock()
-		return nil
-	})
-	done := obs.Register(handle)
+	}()
 
 	for {
 		select {
 		case <-ctx.Done():
-			done()
 			return
 
 		case <-timer.C:

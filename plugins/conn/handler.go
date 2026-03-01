@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: MIT
 
 // Package conn offers muxrpc helpers to connect to remote peers.
-//
 package conn
 
 import (

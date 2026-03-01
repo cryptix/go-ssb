@@ -5,17 +5,15 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"runtime/debug"
 	"strconv"
 	"time"
 
-	"github.com/ssbc/go-ssb/repo"
-	"github.com/ssbc/margaret"
+	margaret "github.com/ssbc/margaret/v2"
 
-	"github.com/ssbc/go-luigi"
+	"github.com/ssbc/go-ssb/repo"
 )
 
 func check(err error) {
@@ -53,28 +51,18 @@ func main() {
 
 	fmt.Println("element count in source log:", from.Seq())
 	start := time.Now()
-	src, err := from.Query(margaret.Limit(limit))
-	check(err)
-	err = src.(luigi.PushSource).Push(context.TODO(), luigi.FuncSink(func(ctx context.Context, v interface{}, err error) error {
-		if err == (luigi.EOS{}) {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("push failed: %w", err)
-		}
 
-		if err, ok := v.(error); ok {
-			if margaret.IsErrNulled(err) {
-				return nil
-			}
-			return err
-		}
-
-		seq, err := to.Append(v)
+	qry := from.Query(margaret.Limit(limit))
+	var seq int64
+	for _, mm := range qry.Iter() {
+		seq, err = to.Append(mm)
 		fmt.Print("\r", seq)
-		return err
-	}))
-	check(err)
+		if err != nil {
+			check(err)
+		}
+	}
+	check(qry.Err())
+
 	fmt.Println()
 	fmt.Println("copy done after:", time.Since(start))
 

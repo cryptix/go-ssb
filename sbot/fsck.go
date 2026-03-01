@@ -13,15 +13,14 @@ import (
 
 	"github.com/RoaringBitmap/roaring"
 	"github.com/machinebox/progress"
-	"github.com/ssbc/go-luigi"
-	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb-refs/tfk"
-	"github.com/ssbc/margaret"
-	"github.com/ssbc/margaret/multilog"
+	margaret "github.com/ssbc/margaret/v2"
+	mroaring "github.com/ssbc/margaret/v2/multilog/roaring"
 	kitlog "go.mindeco.de/log"
 	"go.mindeco.de/log/level"
 
 	"github.com/ssbc/go-ssb"
+	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/multilogs"
 )
 
@@ -59,14 +58,14 @@ func (e ErrConsistencyProblems) Error() string {
 }
 
 type fsckOpt struct {
-	feedsIdx   multilog.MultiLog
+	feedsIdx   *mroaring.MultiLog
 	mode       FSCKMode
 	progressFn FSCKUpdateFunc
 }
 
 type FSCKOption func(*fsckOpt) error
 
-func FSCKWithFeedIndex(idx multilog.MultiLog) FSCKOption {
+func FSCKWithFeedIndex(idx *mroaring.MultiLog) FSCKOption {
 	return func(o *fsckOpt) error {
 		o.feedsIdx = idx
 		return nil
@@ -141,9 +140,7 @@ func (s *Sbot) FSCK(opts ...FSCKOption) error {
 }
 
 // lengthFSCK just checks the length of each stored feed.
-// It expects a multilog as first parameter where each sublog is one feed
-// and each entry maps to another entry in the receiveLog
-func lengthFSCK(authorMlog multilog.MultiLog, receiveLog margaret.Log) error {
+func lengthFSCK(authorMlog *mroaring.MultiLog, receiveLog margaret.Log[*multimsg.MultiMessage]) error {
 	feeds, err := authorMlog.List()
 	if err != nil {
 		return fmt.Errorf("fsck/length: author listing failed: %w", err)
@@ -175,18 +172,19 @@ func lengthFSCK(authorMlog multilog.MultiLog, receiveLog margaret.Log) error {
 			return fmt.Errorf("fsck/length: failed to get rxlog entry for index entry %d for author %q: %w", currentSeqFromIndex, author, err)
 		}
 
-		rxSeq, ok := rxEntry.(int64)
-		if !ok {
-			return fmt.Errorf("fsck/length: failed to get rxlog entry for index entry %d for author %q: %w", currentSeqFromIndex, author, err)
-		}
-		rv, err := receiveLog.Get(rxSeq)
+		rxSeq := int64(*rxEntry)
+		mm, err := receiveLog.Get(rxSeq)
 		if err != nil {
 			if margaret.IsErrNulled(err) {
 				continue
 			}
 			return fmt.Errorf("fsck/length: failed to load rxlog entry %d for %q: %w", rxSeq, author, err)
 		}
-		msg := rv.(refs.Message)
+
+		if mm.Message == nil {
+			continue
+		}
+		msg := mm.Message
 
 		// margaret indexes are 0-based, therefore +1
 		if msg.Seq() != currentSeqFromIndex+1 {
@@ -227,9 +225,7 @@ func (p *processedCounter) Err() error { return nil }
 
 // sequenceFSCK goes through every message in the receiveLog
 // and checks tha the sequence of a feed is correctly increasing by one each message
-func sequenceFSCK(receiveLog margaret.Log, progressFn FSCKUpdateFunc) error {
-	ctx := context.Background()
-
+func sequenceFSCK(receiveLog margaret.Log[*multimsg.MultiMessage], progressFn FSCKUpdateFunc) error {
 	// the last sequence number we saw of that author
 	lastSequence := make(map[string]int64)
 
@@ -240,10 +236,7 @@ func sequenceFSCK(receiveLog margaret.Log, progressFn FSCKUpdateFunc) error {
 	totalMessages := receiveLog.Seq()
 	var pc processedCounter
 
-	src, err := receiveLog.Query(margaret.SeqWrap(true))
-	if err != nil {
-		return err
-	}
+	qry := receiveLog.Query()
 
 	// which feeds have problems
 	var consistencyErrors []ssb.ErrWrongSequence
@@ -260,29 +253,12 @@ func sequenceFSCK(receiveLog margaret.Log, progressFn FSCKUpdateFunc) error {
 	}()
 	defer cancel()
 
-	for {
-		v, err := src.Next(ctx)
-		if err != nil {
-			if luigi.IsEOS(err) {
-				break
-			}
-			return err
+	for rxLogSeq, mm := range qry.Iter() {
+		if mm.Message == nil {
+			pc.Incr()
+			continue
 		}
-
-		sw, ok := v.(margaret.SeqWrapper)
-		if !ok {
-			if errv, ok := v.(error); ok && margaret.IsErrNulled(errv) {
-				continue
-			}
-			return fmt.Errorf("fsck/sw: unexpected message type: %T (wanted %T)", v, sw)
-		}
-
-		rxLogSeq := sw.Seq()
-		val := sw.Value()
-		msg, ok := val.(refs.Message)
-		if !ok {
-			return fmt.Errorf("fsck/value: unexpected message type: %T (wanted %T)", val, msg)
-		}
+		msg := mm.Message
 
 		msgSeq := msg.Seq()
 		authorRef := msg.Author().String()
@@ -300,18 +276,21 @@ func sequenceFSCK(receiveLog margaret.Log, progressFn FSCKUpdateFunc) error {
 			if msgSeq != 1 { // not seen yet, so has to be the first
 				seqErr := ssb.ErrWrongSequence{
 					Ref:     msg.Author(),
-					Stored:  sw.Seq(),
+					Stored:  rxLogSeq,
 					Logical: int64(msg.Seq()),
 				}
 				consistencyErrors = append(consistencyErrors, seqErr)
 				lastSequence[authorRef] = -1
+				pc.Incr()
 				continue
 			}
 			lastSequence[authorRef] = 1
+			pc.Incr()
 			continue
 		}
 
 		if currSeq < 0 { // feed broken, skipping
+			pc.Incr()
 			continue
 		}
 
@@ -323,12 +302,17 @@ func sequenceFSCK(receiveLog margaret.Log, progressFn FSCKUpdateFunc) error {
 			}
 			consistencyErrors = append(consistencyErrors, seqErr)
 			lastSequence[authorRef] = -1
+			pc.Incr()
 			continue
 		}
 		lastSequence[authorRef] = currSeq + 1
 
 		// bench stats
 		pc.Incr()
+	}
+
+	if err := qry.Err(); err != nil {
+		return fmt.Errorf("fsck/seq: query error: %w", err)
 	}
 
 	if len(consistencyErrors) == 0 {

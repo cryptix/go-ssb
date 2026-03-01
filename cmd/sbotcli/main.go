@@ -54,8 +54,8 @@ var (
 	log kitlog.Logger
 
 	configFileFlag = cli.StringFlag{Name: "config", Usage: "path to config file; if filename is omitted from config path config.toml is used"}
-	keyFileFlag  = cli.StringFlag{Name: "key,k", Usage: "Secret key file", Value: "unset"}
-	unixSockFlag = cli.StringFlag{Name: "unixsock", Usage: "If set, Unix socket is used instead of TCP"}
+	keyFileFlag    = cli.StringFlag{Name: "key,k", Usage: "Secret key file", Value: "unset"}
+	unixSockFlag   = cli.StringFlag{Name: "unixsock", Usage: "If set, Unix socket is used instead of TCP"}
 )
 
 func init() {

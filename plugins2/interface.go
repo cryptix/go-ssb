@@ -11,7 +11,9 @@ import (
 
 type AuthMode uint
 
-/* we currently support two auth levels: master (same key-pair as the local node) and public (on the trust graph).
+/*
+	we currently support two auth levels: master (same key-pair as the local node) and public (on the trust graph).
+
 Both registers the plugin to both of them.
 */
 const (

@@ -11,7 +11,6 @@ This version uses a SQL because that seems much handier to handle such an irregu
 
 Q:
 * do we need a 2nd _told us about_ table?
-
 */
 package statematrix
 

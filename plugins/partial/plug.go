@@ -9,11 +9,12 @@ package partial
 import (
 	"github.com/ssbc/go-muxrpc/v2"
 	"github.com/ssbc/go-muxrpc/v2/typemux"
-	"github.com/ssbc/margaret"
-	"github.com/ssbc/margaret/multilog/roaring"
+	margaret "github.com/ssbc/margaret/v2"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
 	"go.mindeco.de/logging"
 
 	"github.com/ssbc/go-ssb"
+	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/plugins/gossip"
 	"github.com/ssbc/go-ssb/query"
 )
@@ -39,7 +40,7 @@ func (p plugin) Handler() muxrpc.Handler {
 func New(log logging.Interface,
 	fm *gossip.FeedManager,
 	feeds, bytype, roots *roaring.MultiLog,
-	rxlog margaret.Log,
+	rxlog margaret.Log[*multimsg.MultiMessage],
 	get ssb.Getter,
 ) ssb.Plugin {
 	rootHdlr := typemux.New(log)
