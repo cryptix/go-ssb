@@ -82,12 +82,12 @@ func TestBlocking(t *testing.T) {
 	})
 	`, kpAlice.ID().String(), aliceHelloWorld.Key().String()), ``)
 
-	newSeq, err := bob.PublishLog.Append(refs.NewContactFollow(claire))
+	newMsg, err := bob.PublishLog.Publish(refs.NewContactFollow(claire))
 	r.NoError(err)
-	r.NotNil(newSeq)
-	newSeq, err = bob.PublishLog.Append(refs.NewContactFollow(kpAlice.ID()))
+	r.NotNil(newMsg)
+	newMsg, err = bob.PublishLog.Publish(refs.NewContactFollow(kpAlice.ID()))
 	r.NoError(err)
-	r.NotNil(newSeq)
+	r.NotNil(newMsg)
 	bob.Replicate(claire)
 	bob.Replicate(kpAlice.ID())
 

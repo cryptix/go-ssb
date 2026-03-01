@@ -5,7 +5,6 @@
 package tests
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ssbc/go-luigi"
 	"github.com/stretchr/testify/require"
 
 	"github.com/ssbc/go-ssb"
@@ -167,28 +165,18 @@ func TestBlobWithHop(t *testing.T) {
 	aliceLog, err := uf.Get(storedrefs.Feed(alice))
 	r.NoError(err)
 
-	gotMessage := make(chan struct{})
-	updateSink := luigi.FuncSink(func(ctx context.Context, v interface{}, err error) error {
-		seq, has := v.(int64)
-		if !has {
-			return fmt.Errorf("unexpected type:%T", v)
+	// poll until alice has at least one message
+	for tries := 0; tries < 100; tries++ {
+		if aliceLog.Seq() >= 0 {
+			break
 		}
-		if seq == 0 {
-			close(gotMessage)
-		}
-		return err
-	})
-	done := aliceLog.Changes().Register(updateSink)
-
-	<-gotMessage
-	done()
+		time.Sleep(100 * time.Millisecond)
+	}
 
 	var wantBlob *refs.BlobRef
 
-	msg, err := mutil.Indirect(bob.ReceiveLog, aliceLog).Get(int64(0))
+	storedMsg, err := mutil.Indirect(bob.ReceiveLog, aliceLog).Get(int64(0))
 	r.NoError(err)
-	storedMsg, ok := msg.(refs.Message)
-	r.True(ok, "wrong type of message: %T", msg)
 	r.EqualValues(1, storedMsg.Seq())
 
 	type testWrap struct {
@@ -338,11 +326,8 @@ func TestBlobTooBigWantedByGo(t *testing.T) {
 	}
 	for tries > 0 {
 
-		v, err := jsFeed.Get(int64(0))
+		msg, err := jsFeed.Get(int64(0))
 		if err == nil {
-			msg, ok := v.(refs.Message)
-			r.True(ok, "not a message")
-
 			err = json.Unmarshal(msg.ContentBytes(), &testData)
 			r.NoError(err)
 			break

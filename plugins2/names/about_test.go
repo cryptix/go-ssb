@@ -13,14 +13,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ssbc/go-luigi"
 	"github.com/stretchr/testify/require"
 
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/client"
 	"github.com/ssbc/go-ssb/internal/testutils"
-	"github.com/ssbc/go-ssb/plugins2"
-	"github.com/ssbc/go-ssb/plugins2/names"
 	"github.com/ssbc/go-ssb/sbot"
 )
 
@@ -30,7 +27,6 @@ func TestAboutNames(t *testing.T) {
 		return
 	}
 
-	// defer leakcheck.Check(t) TODO: add closer to plugin so that they can free their resources properly
 	r := require.New(t)
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -41,12 +37,12 @@ func TestAboutNames(t *testing.T) {
 	repoPath := filepath.Join("testrun", t.Name(), "about")
 	os.RemoveAll(repoPath)
 
+	// names plugin is mounted by default in sbot.New
 	ali, err := sbot.New(
 		sbot.WithHMACSigning(hk),
 		sbot.WithInfo(testutils.NewRelativeTimeLogger(nil)),
 		sbot.WithRepoPath(repoPath),
 		sbot.LateOption(sbot.WithUNIXSocket()),
-		sbot.LateOption(sbot.MountPlugin(&names.Plugin{}, plugins2.AuthMaster)),
 	)
 	r.NoError(err)
 
@@ -67,15 +63,13 @@ func TestAboutNames(t *testing.T) {
 	_, err = ali.PublishLog.Publish(newName)
 	r.NoError(err)
 
-	src, err := ali.ReceiveLog.Query()
-	r.NoError(err)
+	qry := ali.ReceiveLog.Query()
 	var i = 0
-	for {
-		v, err := src.Next(context.TODO())
-		if luigi.IsEOS(err) {
-			break
+	for _, mm := range qry.Iter() {
+		if mm.Message == nil {
+			continue
 		}
-		sm := v.(refs.Message)
+		sm := mm.Message
 		var a refs.About
 		c := sm.ContentBytes()
 		err = json.Unmarshal(c, &a)
@@ -83,6 +77,7 @@ func TestAboutNames(t *testing.T) {
 		r.Equal(newName.Name, a.Name)
 		i++
 	}
+	r.NoError(qry.Err())
 	r.Equal(i, 1)
 
 	c, err := client.NewUnix(filepath.Join(repoPath, "socket"))

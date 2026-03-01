@@ -401,10 +401,10 @@ func TestPublish(t *testing.T) {
 	// get stored message from the log
 	wantSeq := int64(0)
 	a.Equal(wantSeq, srv.ReceiveLog.Seq())
-	msgv, err := srv.ReceiveLog.Get(wantSeq)
+	mm, err := srv.ReceiveLog.Get(wantSeq)
 	r.NoError(err)
-	newMsg, ok := msgv.(refs.Message)
-	r.True(ok)
+	r.NotNil(mm.Message)
+	newMsg := mm.Message
 	r.Equal(newMsg.Key(), ref)
 
 	opts := message.CreateLogArgs{}

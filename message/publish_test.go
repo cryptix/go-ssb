@@ -5,25 +5,23 @@
 package message
 
 import (
-	"context"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	roaringfs "github.com/ssbc/margaret/v2/multilog/roaring/fs"
+
 	"github.com/ssbc/go-ssb"
 	refs "github.com/ssbc/go-ssb-refs"
-	"github.com/ssbc/go-ssb/internal/asynctesting"
 	"github.com/ssbc/go-ssb/multilogs"
 	"github.com/ssbc/go-ssb/repo"
 )
 
 func TestSignMessages(t *testing.T) {
-	tctx := context.TODO()
 	r := require.New(t)
 	a := assert.New(t)
 
@@ -39,16 +37,10 @@ func TestSignMessages(t *testing.T) {
 	r.NoError(err, "failed to open root log")
 	r.EqualValues(-1, rl.Seq(), "not empty")
 
-	userFeeds, userFeedsSnk, err := repo.OpenStandaloneMultiLog(testRepo, "testUsers", multilogs.UserFeedsUpdate)
-	r.NoError(err, "failed to get user feeds multilog")
+	userFeeds := roaringfs.NewMultiLog(testRepo.GetPath("testUsers"))
 	t.Cleanup(func() {
 		userFeeds.Close()
-		userFeedsSnk.Close()
 	})
-
-	killServe, cancel := context.WithCancel(tctx)
-	defer cancel()
-	errc := asynctesting.ServeLog(killServe, t.Name(), rl, userFeedsSnk, true)
 
 	staticRand := rand.New(rand.NewSource(42))
 	testAuthor, err := ssb.NewKeyPair(staticRand, refs.RefAlgoFeedSSB1)
@@ -74,24 +66,24 @@ func TestSignMessages(t *testing.T) {
 		},
 	}
 	for i, msg := range tmsgs {
-		// delay for a bit to allow the indexes to catch up
-		// to be reliable, this has to be done between each publish
-		// TODO: find a way to wait for indexes for this isolated test like we do for sbot
-		time.Sleep(100 * time.Millisecond)
-
-		newSeq, err := w.Append(msg)
+		_, err := w.Publish(msg)
 		r.NoError(err, "failed to pour test message %d", i)
+
+		newSeq := rl.Seq()
 		r.EqualValues(i, newSeq, "advanced")
-		currSeq := rl.Seq()
-		r.NoError(err, "failed to get log seq")
-		r.Equal(newSeq, currSeq, "append messages was not current message?")
+
+		// Update user feeds index so the next publish can find the previous message
+		mm, err := rl.Get(newSeq)
+		r.NoError(err)
+		err = multilogs.UserFeedsUpdate(newSeq, mm, userFeeds)
+		r.NoError(err)
 	}
 
 	for i := 0; i < len(tmsgs); i++ {
-		storedV, err := rl.Get(int64(i))
+		storedMM, err := rl.Get(int64(i))
 		r.NoError(err)
-		storedMsg, ok := storedV.(refs.Message)
-		r.True(ok)
+		r.NotNil(storedMM.Message)
+		storedMsg := storedMM.Message
 		t.Logf("msg:%d\n%s", i, storedMsg.ContentBytes())
 		a.NotNil(storedMsg.Key(), "msg:%d - key", i)
 		if i != 0 {
@@ -104,7 +96,4 @@ func TestSignMessages(t *testing.T) {
 		a.NotNil(value.Signature, "msg:%d - expected signature", i)
 		a.NotNil(value.Sequence, "msg:%d - expected sequence number", i)
 	}
-
-	cancel()
-	r.NoError(<-errc, "serveLog failed")
 }

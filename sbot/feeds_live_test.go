@@ -16,8 +16,7 @@ import (
 	"time"
 
 	"github.com/VividCortex/gohistogram"
-	"github.com/ssbc/go-luigi"
-	"github.com/ssbc/margaret"
+	margaret "github.com/ssbc/margaret/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mindeco.de/log"
@@ -30,6 +29,7 @@ import (
 	"github.com/ssbc/go-ssb/internal/mutil"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
 	"github.com/ssbc/go-ssb/internal/testutils"
+	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/network"
 )
 
@@ -172,10 +172,9 @@ func TestFeedsLiveSimpleFour(t *testing.T) {
 	// setup live listener
 	gotMsg := make(chan refs.Message)
 
-	seqSrc, err := mutil.Indirect(botA.ReceiveLog, feedOfBotD).Query(
-		margaret.Live(true),
+	seqSrc := mutil.Indirect(botA.ReceiveLog, feedOfBotD).Query(
+		margaret.Live(ctx),
 	)
-	r.NoError(err)
 
 	botgroup.Go(makeChanWaiter(ctx, seqSrc, gotMsg))
 
@@ -184,11 +183,10 @@ func TestFeedsLiveSimpleFour(t *testing.T) {
 	// now publish on D and let them bubble to A, live without reconnect
 	timeouts := 0
 	for i := 0; i < testMessageCount; i++ {
-		rxSeq, err := botD.PublishLog.Append(refs.NewPost(fmt.Sprintf("test msg:%d", i)))
+		msg, err := botD.PublishLog.Publish(refs.NewPost(fmt.Sprintf("test msg:%d", i)))
 		r.NoError(err)
 		published := time.Now()
-		if !a.Equal(int64(i), rxSeq) {
-			testutils.StreamLog(t, botD.ReceiveLog)
+		if !a.Equal(int64(i+1), msg.Seq()) {
 			break
 		}
 
@@ -291,13 +289,13 @@ func TestFeedsLiveSimpleTwo(t *testing.T) {
 	ali.Replicate(bob.KeyPair.ID())
 	bob.Replicate(ali.KeyPair.ID())
 
-	seq, err := ali.PublishLog.Append(refs.NewContactFollow(bob.KeyPair.ID()))
+	aliMsg, err := ali.PublishLog.Publish(refs.NewContactFollow(bob.KeyPair.ID()))
 	r.NoError(err)
-	r.Equal(int64(0), seq)
+	r.Equal(int64(1), aliMsg.Seq())
 
-	seq, err = bob.PublishLog.Append(refs.NewContactFollow(ali.KeyPair.ID()))
+	bobMsg, err := bob.PublishLog.Publish(refs.NewContactFollow(ali.KeyPair.ID()))
 	r.NoError(err)
-	r.Equal(int64(0), seq)
+	r.Equal(int64(1), bobMsg.Seq())
 
 	err = bob.Network.Connect(ctx, ali.Network.GetListenAddr())
 	r.NoError(err)
@@ -313,11 +311,10 @@ func TestFeedsLiveSimpleTwo(t *testing.T) {
 	// setup live listener
 	gotMsg := make(chan refs.Message)
 
-	seqSrc, err := mutil.Indirect(bob.ReceiveLog, alisLog).Query(
+	seqSrc := mutil.Indirect(bob.ReceiveLog, alisLog).Query(
 		margaret.Gt(wantSeq),
-		margaret.Live(true),
+		margaret.Live(ctx),
 	)
-	r.NoError(err)
 
 	botgroup.Go(makeChanWaiter(ctx, seqSrc, gotMsg))
 
@@ -325,16 +322,16 @@ func TestFeedsLiveSimpleTwo(t *testing.T) {
 		testMessageCount = 25
 	}
 	for i := 0; i < testMessageCount; i++ {
-		seq, err = ali.PublishLog.Append(refs.NewPost("first msg after connect"))
+		msg, err := ali.PublishLog.Publish(refs.NewPost("first msg after connect"))
 		r.NoError(err)
-		r.Equal(int64(2+i), seq)
+		r.Equal(int64(2+i), int64(msg.Seq()))
 
 		// received new message?
 		select {
 		case <-time.After(2 * time.Second):
 			t.Errorf("timeout %d....", i)
-		case seq := <-gotMsg:
-			a.EqualValues(int64(2+i), seq.Seq(), "wrong seq")
+		case rxMsg := <-gotMsg:
+			a.EqualValues(int64(2+i), rxMsg.Seq(), "wrong seq")
 		}
 	}
 
@@ -418,7 +415,7 @@ func TestFeedsLiveSimpleStar(t *testing.T) {
 
 	for n := extraTestMessages; n > 0; n-- {
 		tMsg := refs.NewPost(fmt.Sprintf("some pre-setup msg %d", n))
-		_, err := botA.PublishLog.Append(tMsg)
+		_, err := botA.PublishLog.Publish(tMsg)
 		r.NoError(err)
 	}
 
@@ -438,11 +435,10 @@ func TestFeedsLiveSimpleStar(t *testing.T) {
 		// setup live listener
 		gotMsg := make(chan refs.Message)
 
-		seqSrc, err := mutil.Indirect(bot.ReceiveLog, feedAonBotB).Query(
+		seqSrc := mutil.Indirect(bot.ReceiveLog, feedAonBotB).Query(
 			margaret.Gt(seqOfFeedA),
-			margaret.Live(true),
+			margaret.Live(ctx),
 		)
-		r.NoError(err)
 
 		botgroup.Go(makeChanWaiter(ctx, seqSrc, gotMsg))
 		botBreceivedNewMessage = append(botBreceivedNewMessage, gotMsg)
@@ -458,10 +454,10 @@ func TestFeedsLiveSimpleStar(t *testing.T) {
 	timeouts := 0
 	for i := 0; i < testMessageCount; i++ {
 		tMsg := refs.NewPost(fmt.Sprintf("some fresh msg %d", i))
-		seq, err := botA.PublishLog.Append(tMsg)
+		msg, err := botA.PublishLog.Publish(tMsg)
 		r.NoError(err)
 		// published := time.Now()
-		r.EqualValues(extraTestMessages+i, seq, "new msg %d", i)
+		r.EqualValues(extraTestMessages+i+1, msg.Seq(), "new msg %d", i)
 
 		// received new message?
 		// TODO: reflect on slice of chans for less sleep
@@ -563,20 +559,10 @@ initialSync:
 	}
 }
 
-func makeChanWaiter(ctx context.Context, src luigi.Source, gotMsg chan<- refs.Message) func() error {
+func makeChanWaiter(ctx context.Context, qry margaret.QueryIterator[*multimsg.MultiMessage], gotMsg chan<- refs.Message) func() error {
 	return func() error {
 		defer close(gotMsg)
-		for {
-			v, err := src.Next(ctx)
-			if err != nil {
-				if luigi.IsEOS(err) || errors.Is(err, ssb.ErrShuttingDown) {
-					return nil
-				}
-				return err
-			}
-
-			msg := v.(refs.Message)
-
+		for _, msg := range qry.Iter() {
 			// fmt.Println("rxFeed", msg.Author().Ref()[1:5], "msgSeq", msg.Seq(), "key", msg.Key().Ref())
 			select {
 			case gotMsg <- msg:
@@ -585,5 +571,12 @@ func makeChanWaiter(ctx context.Context, src luigi.Source, gotMsg chan<- refs.Me
 				return nil
 			}
 		}
+		if err := qry.Err(); err != nil {
+			if errors.Is(err, ssb.ErrShuttingDown) || errors.Is(err, context.Canceled) {
+				return nil
+			}
+			return err
+		}
+		return nil
 	}
 }

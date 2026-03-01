@@ -5,22 +5,19 @@
 package message
 
 import (
-	"context"
 	"io"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/ssbc/margaret"
-	librarian "github.com/ssbc/margaret/indexes"
-	"github.com/ssbc/margaret/multilog"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
+	roaringfs "github.com/ssbc/margaret/v2/multilog/roaring/fs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/ssbc/go-ssb"
 	refs "github.com/ssbc/go-ssb-refs"
-	"github.com/ssbc/go-ssb/internal/asynctesting"
 	"github.com/ssbc/go-ssb/internal/multicloser"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
 	"github.com/ssbc/go-ssb/message/legacy"
@@ -53,12 +50,11 @@ func TestFormatsSimple(t *testing.T) {
 }
 
 type publishTestSession struct {
-	rxLog margaret.Log
+	rxLog *multimsg.WrappedLog
 
 	logCloser io.Closer
 
-	userLogs    multilog.MultiLog
-	indexUpdate librarian.SinkIndex
+	userLogs *roaring.MultiLog
 }
 
 func newPublishtestSession(t *testing.T) publishTestSession {
@@ -72,22 +68,19 @@ func newPublishtestSession(t *testing.T) publishTestSession {
 
 	rxl, err := repo.OpenLog(testRepo)
 	r.NoError(err, "failed to open receive log")
-	mc.AddCloser(rxl.(io.Closer))
+	mc.AddCloser(rxl)
 
 	r.Equal(int64(-1), rxl.Seq(), "not empty")
 
-	userLogs, idxUpdate, err := repo.OpenStandaloneMultiLog(testRepo, "testUsers", multilogs.UserFeedsUpdate)
-	r.NoError(err, "failed to get user feeds multilog")
+	userLogs := roaringfs.NewMultiLog(testRepo.GetPath("testUsers"))
 	mc.AddCloser(userLogs)
-	mc.AddCloser(idxUpdate)
 
 	return publishTestSession{
 		rxLog: rxl,
 
 		logCloser: &mc,
 
-		userLogs:    userLogs,
-		indexUpdate: idxUpdate,
+		userLogs: userLogs,
 	}
 }
 
@@ -126,8 +119,13 @@ func (ts publishTestSession) makeFormatTest(ff refs.RefAlgo) func(t *testing.T) 
 			mr, err := w.Publish(msg)
 			r.NoError(err, "failed to pour test message %d", i)
 			r.NotNil(mr)
-			errc := asynctesting.ServeLog(context.TODO(), t.Name(), ts.rxLog, ts.indexUpdate, false)
-			r.NoError(<-errc)
+
+			// Update user feeds index
+			seq := ts.rxLog.Seq()
+			mm, err := ts.rxLog.Get(seq)
+			r.NoError(err)
+			err = multilogs.UserFeedsUpdate(seq, mm, ts.userLogs)
+			r.NoError(err)
 
 			r.EqualValues(i, authorLog.Seq(), "failed to ")
 		}
@@ -135,12 +133,13 @@ func (ts publishTestSession) makeFormatTest(ff refs.RefAlgo) func(t *testing.T) 
 		r.EqualValues(2, authorLog.Seq(), "not empty %s", ff)
 
 		for i := 0; i < len(tmsgs); i++ {
-			rootSeq, err := authorLog.Get(int64(i))
+			rootSeqEntry, err := authorLog.Get(int64(i))
 			r.NoError(err)
-			storedV, err := ts.rxLog.Get(rootSeq.(int64))
+			rootSeq := int64(*rootSeqEntry)
+			mm, err := ts.rxLog.Get(rootSeq)
 			r.NoError(err)
-			storedMsg, ok := storedV.(refs.Message)
-			r.True(ok)
+			r.NotNil(mm.Message)
+			storedMsg := mm.Message
 			t.Logf("msg:%d\n%s", i, storedMsg.ValueContentJSON())
 			a.NotNil(storedMsg.Key(), "msg:%d - key", i)
 
@@ -148,14 +147,13 @@ func (ts publishTestSession) makeFormatTest(ff refs.RefAlgo) func(t *testing.T) 
 			if i != 0 {
 				a.NotNil(storedMsg.Previous(), "msg:%d - previous", i)
 				// get previous message
-				prevV, err := authorLog.Get(int64(i - 1))
+				prevEntry, err := authorLog.Get(int64(i - 1))
 				r.NoError(err)
-				prevSeq, ok := prevV.(int64)
-				r.True(ok, "got:%T", prevV)
-				prevV, err = ts.rxLog.Get(prevSeq)
+				prevSeq := int64(*prevEntry)
+				prevMM, err := ts.rxLog.Get(prevSeq)
 				r.NoError(err)
-				prevMsg, ok := prevV.(refs.Message)
-				r.True(ok, "got:%T", prevV)
+				r.NotNil(prevMM.Message)
+				prevMsg := prevMM.Message
 
 				a.True(prevMsg.Key().Equal(*storedMsg.Previous()), "msg:%d - wrong previous", i)
 			} else {
@@ -165,8 +163,6 @@ func (ts publishTestSession) makeFormatTest(ff refs.RefAlgo) func(t *testing.T) 
 			a.Equal(int64(i+1), storedMsg.Seq(), "msg:%d - has incorrect sequence")
 
 			// verifies
-			mm, ok := storedV.(*multimsg.MultiMessage)
-			r.True(ok, "wrong type: %T", storedV)
 			switch ff {
 			case refs.RefAlgoFeedSSB1:
 				msg, ok := mm.AsLegacy()

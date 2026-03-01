@@ -5,27 +5,22 @@
 package multilogs
 
 import (
-	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 
-	"github.com/ssbc/go-luigi"
-	"github.com/ssbc/margaret"
-	"github.com/ssbc/margaret/indexes"
-	idxbadger "github.com/ssbc/margaret/indexes/badger"
-	"github.com/ssbc/margaret/multilog"
-	"github.com/ssbc/margaret/multilog/roaring"
-	multifs "github.com/ssbc/margaret/multilog/roaring/fs"
+	margaret "github.com/ssbc/margaret/v2"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
+	multifs "github.com/ssbc/margaret/v2/multilog/roaring/fs"
 	"github.com/stretchr/testify/require"
 
 	"github.com/ssbc/go-ssb"
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/internal/multicloser"
 	"github.com/ssbc/go-ssb/internal/statematrix"
+	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/private"
 	"github.com/ssbc/go-ssb/private/keys"
 	"github.com/ssbc/go-ssb/repo"
@@ -55,14 +50,11 @@ func BenchmarkIndexFixturesCombined(b *testing.B) {
 	for n := 0; n < b.N; n++ {
 
 		b.StopTimer()
-		_, snk, closer := setupCombinedIndex(b, testLog, makeFsMlog)
+		_, idx, closer := setupCombinedIndex(b, testLog, makeFsMlog)
 		r.NoError(err)
 		b.StartTimer()
 
-		src, err := testLog.Query(snk.QuerySpec())
-		r.NoError(err)
-
-		err = luigi.Pump(context.TODO(), snk, src)
+		err = idx.Index(testLog)
 		r.NoError(err)
 		b.StopTimer()
 		closer.Close()
@@ -71,7 +63,7 @@ func BenchmarkIndexFixturesCombined(b *testing.B) {
 
 }
 
-func setupCombinedIndex(t testing.TB, rxlog margaret.Log, mkMlog makeMultilog) (multilog.MultiLog, indexes.SinkIndex, io.Closer) {
+func setupCombinedIndex(t testing.TB, rxlog margaret.Log[*multimsg.MultiMessage], mkMlog makeMultilog) (*roaring.MultiLog, *CombinedIndex, *multicloser.MultiCloser) {
 	r := require.New(t)
 	testPath := filepath.Join("testrun", t.Name(), "combinedIndexes")
 	testRepo := repo.New(testPath)
@@ -79,11 +71,7 @@ func setupCombinedIndex(t testing.TB, rxlog margaret.Log, mkMlog makeMultilog) (
 	keysDB, err := repo.OpenBadgerDB(testPath)
 	r.NoError(err, "openIndex: failed to open keys database")
 
-	idxKeys := idxbadger.NewIndex(keysDB, keys.Recipients{})
-
-	ks := &keys.Store{
-		Index: idxKeys,
-	}
+	ks := keys.NewStore(keysDB, []byte("keys"))
 
 	var (
 		tp testPublisher
@@ -106,17 +94,17 @@ func setupCombinedIndex(t testing.TB, rxlog margaret.Log, mkMlog makeMultilog) (
 	gm := private.NewManager(tkp, tp, ks, rxlog, tg, tangles)
 
 	user := mkMlog(t, testRepo, "user", &mc)
-	private := mkMlog(t, testRepo, "private", &mc)
+	priv := mkMlog(t, testRepo, "private", &mc)
 	byType := mkMlog(t, testRepo, "byType", &mc)
 	groupMembers := mkMlog(t, testRepo, "groupMembers", &mc)
 
-	snk, err := NewCombinedIndex(filepath.Join(testPath, "combined"),
+	idx, err := NewCombinedIndex(testPath,
 		gm,
 		tkp.ID(),
 		rxlog,
 
 		user,
-		private,
+		priv,
 		byType,
 		tangles,
 		groupMembers,
@@ -126,16 +114,13 @@ func setupCombinedIndex(t testing.TB, rxlog margaret.Log, mkMlog makeMultilog) (
 	if err != nil {
 		t.Fatal(err)
 	}
-	mc.AddCloser(snk)
+	mc.AddCloser(idx)
 
-	return user, snk, &mc
+	return user, idx, &mc
 }
 
 func makeFsMlog(t testing.TB, r repo.Interface, name string, mc *multicloser.MultiCloser) *roaring.MultiLog {
-	ml, err := multifs.NewMultiLog(r.GetPath("mlog", name))
-	if err != nil {
-		t.Fatalf("failed to open mlog: %s: %s", name, err)
-	}
+	ml := multifs.NewMultiLog(r.GetPath("mlog", name))
 	mc.AddCloser(ml)
 	return ml
 }
@@ -144,11 +129,11 @@ type makeMultilog func(t testing.TB, r repo.Interface, name string, mc *multiclo
 
 type testPublisher struct{}
 
-func (tp testPublisher) Get(_ int64) (interface{}, error) {
+func (tp testPublisher) Get(_ int64) (*multimsg.MultiMessage, error) {
 	return nil, fmt.Errorf("cant get from test publisher (just a stub)")
 }
 
-func (tp testPublisher) Append(_ interface{}) (int64, error) {
+func (tp testPublisher) Append(_ *multimsg.MultiMessage) (int64, error) {
 	return -1, fmt.Errorf("cant append in test setting")
 }
 
@@ -156,21 +141,20 @@ func (tp testPublisher) Publish(_ interface{}) (refs.Message, error) {
 	return nil, fmt.Errorf("cant publish in test setting")
 }
 
-func (tp testPublisher) Changes() luigi.Observable {
-	panic("not implemented") // TODO: Implement
+func (tp testPublisher) Seq() int64 {
+	return -1
 }
 
-func (tp testPublisher) Seq() int64 {
-	panic("not implemented") // TODO: Implement
+func (tp testPublisher) Query(_ ...margaret.QueryOption) margaret.QueryIterator[*multimsg.MultiMessage] {
+	return margaret.NewIterWrapper(func(yield func(int64, *multimsg.MultiMessage) bool) {})
+}
+
+func (tp testPublisher) Close() error {
+	return nil
 }
 
 type testGetter struct{}
 
 func (tg testGetter) Get(_ refs.MessageRef) (refs.Message, error) {
-	panic("not implemented") // TODO: Implement
-}
-
-// Query returns a stream that is constrained by the passed query specification
-func (tp testPublisher) Query(_ ...margaret.QuerySpec) (luigi.Source, error) {
 	panic("not implemented") // TODO: Implement
 }

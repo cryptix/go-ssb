@@ -16,19 +16,18 @@ import (
 
 	"github.com/ssbc/go-muxrpc/v2"
 	"github.com/ssbc/go-muxrpc/v2/codec"
-	"github.com/ssbc/margaret"
-	librarian "github.com/ssbc/margaret/indexes"
-	"github.com/ssbc/margaret/multilog"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
+	roaringfs "github.com/ssbc/margaret/v2/multilog/roaring/fs"
 	"github.com/stretchr/testify/require"
 	"go.mindeco.de/log"
 
 	"github.com/ssbc/go-ssb"
 	refs "github.com/ssbc/go-ssb-refs"
-	"github.com/ssbc/go-ssb/internal/asynctesting"
 	"github.com/ssbc/go-ssb/internal/ctxutils"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
 	"github.com/ssbc/go-ssb/internal/testutils"
 	"github.com/ssbc/go-ssb/message"
+	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/multilogs"
 	"github.com/ssbc/go-ssb/repo"
 )
@@ -47,8 +46,8 @@ func loadTestRepo(
 	repoPath string,
 ) (
 	func(t *testing.T, num int, text string),
-	margaret.Log,
-	multilog.MultiLog,
+	*multimsg.WrappedLog,
+	*roaring.MultiLog,
 	ssb.KeyPair,
 ) {
 
@@ -61,24 +60,27 @@ func loadTestRepo(
 	rootLog, err := repo.OpenLog(r)
 	require.NoError(t, err, "error opening source repository")
 
-	userFeeds, refresh, err := repo.OpenStandaloneMultiLog(r, "userFeeds", multilogs.UserFeedsUpdate)
-	require.NoError(t, err, "error getting dst userfeeds multilog")
+	userFeeds := roaringfs.NewMultiLog(filepath.Join(repoPath, "userFeeds"))
 
 	pub, err := message.OpenPublishLog(rootLog, userFeeds, keyPair)
-	require.NoError(t, err, "error getting dst userfeeds multilog")
+	require.NoError(t, err, "error creating publish log")
 
-	return createMessages(pub, refresh, rootLog), rootLog, userFeeds, keyPair
+	return createMessages(pub, rootLog, userFeeds), rootLog, userFeeds, keyPair
 }
 
-func createMessages(pub ssb.Publisher, fill librarian.SinkIndex, rootLog margaret.Log) func(t *testing.T, num int, text string) {
+func createMessages(pub ssb.Publisher, rootLog *multimsg.WrappedLog, userFeeds *roaring.MultiLog) func(t *testing.T, num int, text string) {
 	return func(t *testing.T, num int, text string) {
 		t.Log("creating", num, text)
 		for i := 0; i < num; i++ {
 			post := refs.NewPost(fmt.Sprintf("hello world #%d - %s", i, text))
 			msg, err := pub.Publish(post)
 			require.NoError(t, err)
-			errc := asynctesting.ServeLog(context.TODO(), "helper", rootLog, fill, false)
-			require.NoError(t, <-errc, "refresh failed")
+			// Update the user feeds index for the newly published message
+			seq := rootLog.Seq()
+			mm, err := rootLog.Get(seq)
+			require.NoError(t, err)
+			err = multilogs.UserFeedsUpdate(seq, mm, userFeeds)
+			require.NoError(t, err, "refresh failed")
 			t.Log("msg:", i, msg.Key().String())
 		}
 	}
@@ -159,10 +161,10 @@ func TestCreateHistoryStream(t *testing.T) {
 
 			create(t, userFeedLen, "prefill")
 			t.Log("created prefil")
-			log, err := userFeeds.Get(storedrefs.Feed(keyPair.ID()))
+			subLog, err := userFeeds.Get(storedrefs.Feed(keyPair.ID()))
 			r.NoError(err)
 
-			r.EqualValues(userFeedLen-1, log.Seq())
+			r.EqualValues(userFeedLen-1, subLog.Seq())
 
 			test.Args.ID = keyPair.ID()
 			var buf = new(bytes.Buffer)

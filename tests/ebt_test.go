@@ -173,9 +173,8 @@ func XTestEpidemicBroadcastTrees(t *testing.T) {
 	r.EqualValues(14, seq, "wrong rx seq")
 
 	alicesMsgs := mutil.Indirect(sbot.ReceiveLog, alices)
-	iv, err := alicesMsgs.Get(seq)
+	msg, err := alicesMsgs.Get(seq)
 	r.NoError(err)
-	msg := iv.(refs.Message)
 
 	var followTest struct {
 		Type string

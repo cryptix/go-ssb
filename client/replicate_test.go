@@ -21,6 +21,7 @@ import (
 	"github.com/ssbc/go-ssb/client"
 	"github.com/ssbc/go-ssb/internal/testutils"
 	"github.com/ssbc/go-ssb/message"
+	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/sbot"
 )
 
@@ -73,7 +74,7 @@ func TestReplicateUpTo(t *testing.T) {
 		kp, err := ssb.NewKeyPair(nil, algo)
 		r.NoError(err)
 
-		publish, err := message.OpenPublishLog(srv.ReceiveLog, srv.Users, kp)
+		publish, err := message.OpenPublishLog(srv.ReceiveLog.(*multimsg.WrappedLog), srv.Users, kp)
 		r.NoError(err)
 
 		testKeyPairs[kp.ID().String()] = keyAndCount{kp, i}

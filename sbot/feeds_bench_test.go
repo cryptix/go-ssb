@@ -18,7 +18,7 @@ import (
 	"github.com/ssbc/go-ssb/internal/mutil"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
 	"github.com/ssbc/go-ssb/internal/testutils"
-	"github.com/ssbc/margaret"
+	margaret "github.com/ssbc/margaret/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/errgroup"
@@ -107,27 +107,26 @@ func benchChain(chainLen int) func(b *testing.B) {
 			wantSeq := int64(n - 2)
 			r.EqualValues(wantSeq, feedOfLastBot.Seq(), "after connect check")
 
-			seqSrc, err := mutil.Indirect(theBots[0].ReceiveLog, feedOfLastBot).Query(
+			seqSrc := mutil.Indirect(theBots[0].ReceiveLog, feedOfLastBot).Query(
 				margaret.Gt(wantSeq),
-				margaret.Live(true),
+				margaret.Live(ctx),
 			)
-			r.NoError(err)
 
 			b.StartTimer()
 			// now publish on C and let them bubble to A, live without reconnect
 			for i := 0; i < testMessageCount; i++ {
-				rxSeq, err := theBots[n-1].PublishLog.Append(fmt.Sprintf("some test msg:%02d", n))
+				msg, err := theBots[n-1].PublishLog.Publish(fmt.Sprintf("some test msg:%02d", n))
 				r.NoError(err)
-				a.EqualValues(int64(msgCnt+i), rxSeq)
+				a.EqualValues(int64(msgCnt+i), msg.Seq()-1)
+			}
 
-				timeoutCtx, done := context.WithTimeout(ctx, 2*time.Second)
-
-				v, err := seqSrc.Next(timeoutCtx)
-				r.NoError(err)
-				msg, ok := v.(refs.Message)
-				r.True(ok)
-				a.EqualValues(int64(n+i), msg.Seq(), "wrong seq")
-				done()
+			received := 0
+			for _, msg := range seqSrc.Iter() {
+				a.EqualValues(int64(n+received), msg.Seq(), "wrong seq")
+				received++
+				if received >= testMessageCount {
+					break
+				}
 			}
 			b.StopTimer()
 
