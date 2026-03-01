@@ -7,38 +7,28 @@
 package indexes
 
 import (
-	"context"
-	"fmt"
-
 	"github.com/dgraph-io/badger/v3"
-	"github.com/ssbc/margaret"
-	librarian "github.com/ssbc/margaret/indexes"
-	libbadger "github.com/ssbc/margaret/indexes/badger"
+	"github.com/ssbc/margaret/v2/indexes"
 
-	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
+	"github.com/ssbc/go-ssb/message/multimsg"
+	"github.com/ssbc/go-ssb/repo"
 )
 
-// OpenGet supplies the get(msgRef) -> rootLogSeq idx
-func OpenGet(db *badger.DB) (librarian.Index, librarian.SinkIndex) {
-	idx := libbadger.NewIndexWithKeyPrefix(db, int64(0), []byte("byMsgRef"))
-	sinkIdx := librarian.NewSinkIndex(updateGetFn, idx)
+// OpenGet supplies the get(msgRef) -> rootLogSeq index.
+// Returns the lookup index and a SinkIndex that processes log entries.
+func OpenGet(db *badger.DB) (indexes.Index[int64], *indexes.SinkIndex[*multimsg.MultiMessage, int64]) {
+	seqIdx := repo.NewBadgerSeqIndex(db, []byte("byMsgRef"))
+	idx := repo.NewBadgerIndex(db, []byte("byMsgRef"))
+
+	sinkIdx := indexes.NewSinkIndex[*multimsg.MultiMessage](idx,
+		func(seq int64, msg *multimsg.MultiMessage) (indexes.Addr, int64, bool) {
+			if msg.Message == nil {
+				return "", 0, false // skip nulled entries
+			}
+			return indexes.Addr(storedrefs.Message(msg.Key())), seq, true
+		},
+	).WithSeqTracking(seqIdx)
+
 	return idx, sinkIdx
-}
-
-func updateGetFn(ctx context.Context, seq int64, val interface{}, idx librarian.SetterIndex) error {
-	msg, ok := val.(refs.Message)
-	if !ok {
-		err, ok := val.(error)
-		if ok && margaret.IsErrNulled(err) {
-			return nil
-		}
-		return fmt.Errorf("index/get: unexpected message type: %T", val)
-	}
-
-	err := idx.Set(ctx, storedrefs.Message(msg.Key()), seq)
-	if err != nil {
-		return fmt.Errorf("index/get: failed to update message %s (seq: %d): %w", msg.Key().String(), seq, err)
-	}
-	return nil
 }

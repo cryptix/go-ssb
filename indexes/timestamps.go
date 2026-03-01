@@ -5,14 +5,13 @@
 package indexes
 
 import (
-	"context"
 	"fmt"
 	"time"
 
-	refs "github.com/ssbc/go-ssb-refs"
+	margaret "github.com/ssbc/margaret/v2"
+
+	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/repo"
-	"github.com/ssbc/margaret"
-	mindex "github.com/ssbc/margaret/indexes"
 )
 
 type Timestamps struct {
@@ -23,52 +22,41 @@ func NewTimestampSorter(res *repo.SequenceResolver) *Timestamps {
 	return &Timestamps{resolver: res}
 }
 
-var _ mindex.SinkIndex = (*Timestamps)(nil)
-
 func (idx *Timestamps) Close() error {
 	return idx.resolver.Close()
 }
 
-func (idx *Timestamps) Pour(ctx context.Context, swv interface{}) error {
-	sw, ok := swv.(margaret.SeqWrapper)
-	if !ok {
-		return fmt.Errorf("error casting seq wrapper. got type %T", swv)
-	}
-	rxSeq := int64(sw.Seq()) //received as
-
-	v := sw.Value()
-
-	if errV, ok := v.(error); ok {
-		if margaret.IsErrNulled(errV) {
-			err := idx.resolver.Append(rxSeq, 0, time.Now(), time.Now())
-			if err != nil {
-				return fmt.Errorf("error updating sequence resolver (nulled message): %w", err)
-			}
-			return nil
+// ProcessEntry indexes a single log entry into the sequence resolver.
+func (idx *Timestamps) ProcessEntry(rxSeq int64, mm *multimsg.MultiMessage) error {
+	if mm.Message == nil {
+		// nulled entry
+		err := idx.resolver.Append(rxSeq, 0, time.Now(), time.Now())
+		if err != nil {
+			return fmt.Errorf("error updating sequence resolver (nulled message): %w", err)
 		}
-		return errV
+		return nil
 	}
 
-	msg, ok := v.(refs.Message)
-	if !ok {
-		return fmt.Errorf("error casting message. got type %T", v)
-	}
-
+	msg := mm.Message
 	err := idx.resolver.Append(rxSeq, msg.Seq(), msg.Claimed(), msg.Received())
 	if err != nil {
 		return fmt.Errorf("error updating sequence resolver: %w", err)
 	}
-
 	return nil
 }
 
-// QuerySpec returns the query spec that queries the next needed messages from the log
-func (idx *Timestamps) QuerySpec() margaret.QuerySpec {
+// LastProcessedSeq returns the last sequence that was processed.
+func (idx *Timestamps) LastProcessedSeq() int64 {
+	return idx.resolver.Seq() - 1
+}
 
-	resN := idx.resolver.Seq() - 1
-
-	return margaret.MergeQuerySpec(
-		margaret.Gt(resN),
-		margaret.SeqWrap(true),
-	)
+// Index processes all entries from the given log, starting after LastProcessedSeq.
+func (idx *Timestamps) Index(log margaret.Log[*multimsg.MultiMessage]) error {
+	qry := log.Query(margaret.Gt(idx.LastProcessedSeq()))
+	for seq, msg := range qry.Iter() {
+		if err := idx.ProcessEntry(seq, msg); err != nil {
+			return err
+		}
+	}
+	return qry.Err()
 }

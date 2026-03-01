@@ -8,18 +8,17 @@ import (
 	"fmt"
 
 	"github.com/ssbc/go-ssb/message/multimsg"
-	"github.com/ssbc/margaret/offset2"
+	"github.com/ssbc/margaret/v2/offset2"
 )
 
-func OpenLog(r Interface, path ...string) (multimsg.AlterableLog, error) {
+func OpenLog(r Interface, path ...string) (*multimsg.WrappedLog, error) {
 	// prefix path with "logs" if path is not empty, otherwise use "log"
 	path = append([]string{"log"}, path...)
 	if len(path) > 1 {
 		path[0] = "logs"
 	}
 
-	// TODO use proper log message type here
-	log, err := offset2.Open(r.GetPath(path...), multimsg.MargaretCodec{})
+	log, err := offset2.Open[*multimsg.MultiMessage](r.GetPath(path...))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open log: %w", err)
 	}

@@ -7,70 +7,31 @@ package repo
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
-	"github.com/dgraph-io/badger/v3"
-	librarian "github.com/ssbc/margaret/indexes"
-	"github.com/ssbc/margaret/multilog"
-	"github.com/ssbc/margaret/multilog/roaring"
-	multibadger "github.com/ssbc/margaret/multilog/roaring/badger"
-	multifs "github.com/ssbc/margaret/multilog/roaring/fs"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
+	"github.com/ssbc/margaret/v2/multilog/roaring/fs"
 )
-
-// todo: save the current state in the multilog
-func makeSinkIndex(dbPath string, mlog multilog.MultiLog, fn multilog.Func) (librarian.SinkIndex, error) {
-	statePath := filepath.Join(dbPath, "..", "state.json")
-	mode := os.O_RDWR | os.O_EXCL
-	if _, err := os.Stat(statePath); os.IsNotExist(err) {
-		mode |= os.O_CREATE
-	}
-	idxStateFile, err := os.OpenFile(statePath, mode, 0700)
-	if err != nil {
-		return nil, fmt.Errorf("error opening state file: %w", err)
-	}
-
-	return multilog.NewSink(idxStateFile, mlog, fn), nil
-}
 
 const PrefixMultiLog = "sublogs"
 
-func OpenBadgerDB(path string) (*badger.DB, error) {
-	opts := badgerOpts(path)
-	return badger.Open(opts)
-}
-
-func OpenStandaloneMultiLog(r Interface, name string, f multilog.Func) (multilog.MultiLog, librarian.SinkIndex, error) {
-
-	dbPath := r.GetPath(PrefixMultiLog, name, "badger")
-	mlog, err := multibadger.NewStandalone(dbPath)
-	if err != nil {
-		return nil, nil, fmt.Errorf("mlog/badger: failed to open backing db: %w", err)
-	}
-
-	snk, err := makeSinkIndex(dbPath, mlog, f)
-	if err != nil {
-		return nil, nil, fmt.Errorf("mlog/badger: failed to create sink: %w", err)
-	}
-
-	return mlog, snk, nil
-}
-
-func OpenFileSystemMultiLog(r Interface, name string, f multilog.Func) (*roaring.MultiLog, librarian.SinkIndex, error) {
+// OpenFileSystemMultiLog opens a roaring bitmap multilog at the standard sublogs path.
+// Sublogs store int64 sequence numbers referencing the root log.
+func OpenFileSystemMultiLog(r Interface, name string) (*roaring.MultiLog, error) {
 	dbPath := r.GetPath(PrefixMultiLog, name, "fs-bitmaps")
 	err := os.MkdirAll(dbPath, 0700)
 	if err != nil {
-		return nil, nil, fmt.Errorf("mkdir error for %q: %w", dbPath, err)
+		return nil, fmt.Errorf("mlog/roaring: mkdir error for %q: %w", dbPath, err)
 	}
 
-	mlog, err := multifs.NewMultiLog(dbPath)
+	mlog := fs.NewMultiLog(dbPath)
+	return mlog, nil
+}
+
+// OpenBitmapMultiLogAt opens a roaring bitmap multilog at an arbitrary path.
+func OpenBitmapMultiLogAt(path string) (*roaring.MultiLog, error) {
+	err := os.MkdirAll(path, 0700)
 	if err != nil {
-		return nil, nil, fmt.Errorf("open error for %q: %w", dbPath, err)
+		return nil, fmt.Errorf("mlog/roaring: mkdir error for %q: %w", path, err)
 	}
-
-	snk, err := makeSinkIndex(dbPath, mlog, f)
-	if err != nil {
-		return nil, nil, fmt.Errorf("mlog/fs: failed to create sink: %w", err)
-	}
-
-	return mlog, snk, nil
+	return fs.NewMultiLog(path), nil
 }

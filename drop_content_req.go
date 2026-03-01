@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 
 	refs "github.com/ssbc/go-ssb-refs"
-	"github.com/ssbc/margaret"
+	margaret "github.com/ssbc/margaret/v2"
+
+	"github.com/ssbc/go-ssb/message/multimsg"
 )
 
 // DropContentRequest has special meaning on a gabby-grove feed.
@@ -31,18 +33,18 @@ func NewDropContentRequest(seq uint, h refs.MessageRef) *DropContentRequest {
 	}
 }
 
-func (dcr DropContentRequest) Valid(log margaret.Log) bool {
+func (dcr DropContentRequest) Valid(log margaret.Log[*multimsg.MultiMessage]) bool {
 	if dcr.Sequence < 1 {
 		return false
 	}
 
-	msgv, err := log.Get(int64(dcr.Sequence - 1))
+	mm, err := log.Get(int64(dcr.Sequence - 1))
 	if err != nil {
 		return false
 	}
 
-	msg, ok := msgv.(refs.Message)
-	if !ok {
+	msg := mm.Message
+	if msg == nil {
 		return false
 	}
 

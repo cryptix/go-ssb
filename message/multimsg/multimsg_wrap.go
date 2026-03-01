@@ -6,67 +6,67 @@ package multimsg
 
 import (
 	"fmt"
-	"io"
 	"time"
 
 	gabbygrove "github.com/ssbc/go-gabbygrove"
 	"github.com/ssbc/go-metafeed"
 	refs "github.com/ssbc/go-ssb-refs"
-	"github.com/ssbc/margaret"
+	margaret "github.com/ssbc/margaret/v2"
 
 	"github.com/ssbc/go-ssb/message/legacy"
 )
 
-type AlterableLog interface {
-	margaret.Log
-	margaret.Alterer
-	io.Closer
-}
+// AlterableLog is a margaret log that supports nulling and replacing entries.
+type AlterableLog = margaret.Alterable[*MultiMessage]
 
-func NewWrappedLog(in AlterableLog) *WrappedLog {
+func NewWrappedLog(in margaret.Alterable[*MultiMessage]) *WrappedLog {
 	return &WrappedLog{
-		AlterableLog: in,
-		receivedNow:  time.Now,
+		Alterable:   in,
+		receivedNow: time.Now,
 	}
 }
 
+// WrappedLog wraps an alterable log and adds received timestamps
+// and message-type conversion on append.
 type WrappedLog struct {
-	AlterableLog
+	margaret.Alterable[*MultiMessage]
 
 	// overwriteable for testing
 	receivedNow func() time.Time
 }
 
-func (wl WrappedLog) Append(val interface{}) (int64, error) {
-	if mm, ok := val.(*MultiMessage); ok {
-		return wl.AlterableLog.Append(*mm)
+// Append adds a MultiMessage to the log, setting the received timestamp if not already set.
+func (wl *WrappedLog) Append(mm *MultiMessage) (int64, error) {
+	if mm.received.IsZero() {
+		mm.received = wl.receivedNow()
 	}
+	return wl.Alterable.Append(mm)
+}
 
+// AppendMessage wraps a refs.Message into a MultiMessage and appends it.
+// This is used by the publish and verification paths which produce typed messages
+// (StoredMessage, Transfer, etc.) that need to be wrapped before storage.
+func (wl *WrappedLog) AppendMessage(msg refs.Message) (int64, error) {
 	var mm MultiMessage
+	mm.key = msg.Key()
 
-	abs, ok := val.(refs.Message)
-	if !ok {
-		return margaret.SeqEmpty, fmt.Errorf("wrappedLog: not a refs.Message: %T", val)
-	}
-
-	mm.key = abs.Key()
-
-	switch tv := val.(type) {
+	now := wl.receivedNow()
+	switch tv := msg.(type) {
 	case *legacy.StoredMessage:
 		mm.tipe = Legacy
 		mm.Message = tv
-		tv.Timestamp_ = wl.receivedNow()
+		tv.Timestamp_ = now
 	case *gabbygrove.Transfer:
 		mm.tipe = Gabby
 		mm.Message = tv
-		mm.received = wl.receivedNow()
+		mm.received = now
 	case *metafeed.Message:
 		mm.tipe = MetaFeed
 		mm.Message = tv
-		mm.received = wl.receivedNow()
+		mm.received = now
 	default:
-		return margaret.SeqEmpty, fmt.Errorf("wrappedLog: unsupported message type: %T", val)
+		return margaret.SeqEmpty, fmt.Errorf("wrappedLog: unsupported message type: %T", msg)
 	}
 
-	return wl.AlterableLog.Append(mm)
+	return wl.Alterable.Append(&mm)
 }

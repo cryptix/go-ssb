@@ -10,13 +10,15 @@ import (
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb-refs/tfk"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
-	"github.com/ssbc/margaret"
-	librarian "github.com/ssbc/margaret/indexes"
-	"github.com/ssbc/margaret/multilog"
+	"github.com/ssbc/go-ssb/message/multimsg"
+	margaret "github.com/ssbc/margaret/v2"
+	"github.com/ssbc/margaret/v2/indexes"
+	"github.com/ssbc/margaret/v2/multilog"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
 )
 
 type Publisher interface {
-	margaret.Log
+	margaret.Log[*multimsg.MultiMessage]
 
 	// Publish is a utility wrapper around append which returns the new message reference key
 	Publish(content interface{}) (refs.Message, error)
@@ -27,11 +29,11 @@ type Getter interface {
 }
 
 type MultiLogGetter interface {
-	GetMultiLog(name string) (multilog.MultiLog, bool)
+	GetMultiLog(name string) (*roaring.MultiLog, bool)
 }
 
 type SimpleIndexGetter interface {
-	GetSimpleIndex(name string) (librarian.Index, bool)
+	GetSimpleIndex(name string) (indexes.Index[int64], bool)
 }
 
 type Indexer interface {
@@ -108,7 +110,7 @@ type ReplicateUpToResponseSet map[string]ReplicateUpToResponse
 
 // FeedsWithSeqs returns a source that emits one ReplicateUpToResponse per stored feed in feedIndex
 // TODO: make cancelable and with no RAM overhead when only partially used (iterate on demand)
-func FeedsWithSeqs(feedIndex multilog.MultiLog) (ReplicateUpToResponseSet, error) {
+func FeedsWithSeqs(feedIndex *roaring.MultiLog) (ReplicateUpToResponseSet, error) {
 	storedFeeds, err := feedIndex.List()
 	if err != nil {
 		return nil, fmt.Errorf("feedSrc: did not get user list: %w", err)
@@ -133,14 +135,14 @@ func FeedsWithSeqs(feedIndex multilog.MultiLog) (ReplicateUpToResponseSet, error
 }
 
 // WantedFeedsWithSeqs is like FeedsWithSeqs but omits feeds that are not in the wanted list.
-func WantedFeedsWithSeqs(feedIndex multilog.MultiLog, wanted []refs.FeedRef) (ReplicateUpToResponseSet, error) {
+func WantedFeedsWithSeqs(feedIndex *roaring.MultiLog, wanted []refs.FeedRef) (ReplicateUpToResponseSet, error) {
 	var feedsWithSeqs = make(ReplicateUpToResponseSet, len(wanted))
 
 	for i, author := range wanted {
 
 		idxAddr := storedrefs.Feed(author)
 
-		isStored, err := multilog.Has(feedIndex, idxAddr)
+		isStored, err := feedIndex.Has(multilog.Addr(idxAddr))
 		if err != nil {
 			return nil, err
 		}
@@ -153,7 +155,7 @@ func WantedFeedsWithSeqs(feedIndex multilog.MultiLog, wanted []refs.FeedRef) (Re
 			continue
 		}
 
-		subLog, err := feedIndex.Get(idxAddr)
+		subLog, err := feedIndex.Get(multilog.Addr(idxAddr))
 		if err != nil {
 			return nil, fmt.Errorf("feedSrc(%d): did not load sublog: %w", i, err)
 		}

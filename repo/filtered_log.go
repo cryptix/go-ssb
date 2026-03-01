@@ -5,21 +5,20 @@
 package repo
 
 import (
-	"context"
 	"fmt"
 
-	"github.com/ssbc/go-luigi"
-	"github.com/ssbc/go-luigi/mfr"
 	refs "github.com/ssbc/go-ssb-refs"
-	"github.com/ssbc/margaret"
+	margaret "github.com/ssbc/margaret/v2"
+
+	"github.com/ssbc/go-ssb/message/multimsg"
 )
 
-// FilterFunc works on messages of a FilteredLog. If the func returns true, the log is in the filtered log.
+// FilterFunc works on messages of a FilteredLog. If the func returns true, the message is included.
 type FilterFunc func(refs.Message) bool
 
 // NewFilteredLog wraps the passed log into a new one, using the FilterFunc to decide if a message is in the log.
-func NewFilteredLog(b margaret.Log, fn FilterFunc) margaret.Log {
-	return FilteredLog{
+func NewFilteredLog(b margaret.Log[*multimsg.MultiMessage], fn FilterFunc) margaret.Log[*multimsg.MultiMessage] {
+	return &FilteredLog{
 		backing: b,
 		filter:  fn,
 	}
@@ -28,62 +27,49 @@ func NewFilteredLog(b margaret.Log, fn FilterFunc) margaret.Log {
 // FilteredLog omits entries in the backing log as decided by the configured FilterFunc.
 // It does so by claiming the entries are deleted (via returning margaret.ErrNulled instead)
 type FilteredLog struct {
-	backing margaret.Log
-
-	filter FilterFunc
+	backing margaret.Log[*multimsg.MultiMessage]
+	filter  FilterFunc
 }
 
-func (fl FilteredLog) Seq() int64 { return fl.backing.Seq() }
+func (fl *FilteredLog) Seq() int64 { return fl.backing.Seq() }
 
-func (fl FilteredLog) Changes() luigi.Observable { return fl.backing.Changes() }
-
-// Get retrieves the message object by traversing the authors sublog to the root log
-func (fl FilteredLog) Get(s int64) (interface{}, error) {
-	v, err := fl.backing.Get(s)
+// Get retrieves the message, returning ErrNulled if the filter rejects it.
+func (fl *FilteredLog) Get(s int64) (*multimsg.MultiMessage, error) {
+	mm, err := fl.backing.Get(s)
 	if err != nil {
-		return nil, fmt.Errorf("filtered get: failed to retrieve sequence for the root log: %w", err)
+		return nil, fmt.Errorf("filtered get: failed to retrieve entry: %w", err)
 	}
-	switch tv := v.(type) {
-	case error:
-		return tv, nil
-	case refs.Message:
-		if okay := fl.filter(tv); !okay {
-			return margaret.ErrNulled, nil
-		}
-		return tv, nil
-	default:
-		return nil, fmt.Errorf("unhandled message type: %T", v)
+	if mm.Message == nil {
+		return nil, margaret.ErrNulled
 	}
+	if okay := fl.filter(mm.Message); !okay {
+		return nil, margaret.ErrNulled
+	}
+	return mm, nil
 }
 
-func (fl FilteredLog) Query(qry ...margaret.QuerySpec) (luigi.Source, error) {
-	src, err := fl.backing.Query(qry...)
-	if err != nil {
-		return nil, err
-	}
-	filterdSrc := mfr.SourceFilter(src, func(ctx context.Context, v interface{}) (bool, error) {
-		sw := v.(margaret.SeqWrapper)
-		iv := sw.Value()
+// Query returns an iterator that skips entries rejected by the filter.
+func (fl *FilteredLog) Query(opts ...margaret.QueryOption) margaret.QueryIterator[*multimsg.MultiMessage] {
+	innerQry := fl.backing.Query(opts...)
 
-		switch tv := iv.(type) {
-
-		case error:
-			if margaret.IsErrNulled(tv) {
-				return false, nil
+	return margaret.NewLiveIterWrapper[*multimsg.MultiMessage](func(yield func(int64, *multimsg.MultiMessage) bool) {
+		for seq, mm := range innerQry.Iter() {
+			if mm.Message == nil {
+				continue // skip nulled
 			}
-			return false, tv
-		case refs.Message:
-			if okay := fl.filter(tv); !okay {
-				return false, nil
+			if okay := fl.filter(mm.Message); !okay {
+				continue // skip filtered
 			}
-			return true, nil
-		default:
-			return false, fmt.Errorf("unhandled message type: %T", v)
+			if !yield(seq, mm) {
+				return
+			}
 		}
-	})
-	return filterdSrc, nil
+	}, innerQry.Err)
 }
 
-func (fl FilteredLog) Append(val interface{}) (int64, error) {
-	return -2, fmt.Errorf("FitleredLog is read-only")
+// Append is not supported on a filtered log.
+func (fl *FilteredLog) Append(*multimsg.MultiMessage) (int64, error) {
+	return -2, fmt.Errorf("FilteredLog is read-only")
 }
+
+func (fl *FilteredLog) Close() error { return nil }

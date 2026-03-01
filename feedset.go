@@ -8,14 +8,13 @@ import (
 	"fmt"
 	"sync"
 
-	librarian "github.com/ssbc/margaret/indexes"
-
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb-refs/tfk"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
+	"github.com/ssbc/margaret/v2/multilog"
 )
 
-type strFeedMap map[librarian.Addr]struct{}
+type strFeedMap map[multilog.Addr]struct{}
 
 type StrFeedSet struct {
 	mu  *sync.Mutex
