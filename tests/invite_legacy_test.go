@@ -50,7 +50,7 @@ func TestLegacyInviteJSCreate(t *testing.T) {
 	addr += base64.StdEncoding.EncodeToString(bob.KeyPair.ID().PubKey())
 	t.Log("addr:", addr)
 
-	bob.PublishLog.Append(map[string]interface{}{
+	bob.PublishLog.Publish(map[string]interface{}{
 		"type":         "address",
 		"availability": 1,
 		"address":      addr,
@@ -184,7 +184,7 @@ func TestLegacyInviteJSAccept(t *testing.T) {
 	addr += base64.StdEncoding.EncodeToString(bob.KeyPair.ID().PubKey())
 	t.Log("addr:", addr)
 
-	bob.PublishLog.Append(map[string]interface{}{
+	bob.PublishLog.Publish(map[string]interface{}{
 		"type":         "address",
 		"availability": 1,
 		"address":      addr,

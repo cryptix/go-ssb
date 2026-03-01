@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"testing"
 
-	librarian "github.com/ssbc/margaret/indexes"
+	"github.com/ssbc/margaret/v2/multilog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -99,7 +99,7 @@ func XTestGroupsJSCreate(t *testing.T) {
 
 	// testutils.StreamLog(t, bob.ReceiveLog)
 
-	hintSeqs, err := bob.ByType.Get(librarian.Addr("test-hint"))
+	hintSeqs, err := bob.ByType.Get(multilog.Addr("test-hint"))
 	r.NoError(err)
 
 	hints := mutil.Indirect(bob.ReceiveLog, hintSeqs)
@@ -110,7 +110,7 @@ func XTestGroupsJSCreate(t *testing.T) {
 	testHintV, err := hints.Get(firstMsg)
 	r.NoError(err)
 
-	testHint := testHintV.(refs.Message)
+	var testHint refs.Message = testHintV
 
 	// this is a public message which just tells the go-side whice one the invite is
 	var hintContent struct {

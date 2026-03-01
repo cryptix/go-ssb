@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ssbc/margaret/indexes"
-	"github.com/ssbc/margaret/multilog/roaring"
+	"github.com/ssbc/margaret/v2/multilog"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
 	"github.com/stretchr/testify/require"
 	"go.mindeco.de/log"
 	kitlog "go.mindeco.de/log"
@@ -221,18 +221,18 @@ func TestPrivateGroupsManualDecrypt(t *testing.T) {
 	chkCount(tal.ByType)("string:test", 2)
 	chkCount(tal.ByType)("string:post", 2)
 
-	addr := indexes.Addr("box2:") + storedrefs.Feed(srh.KeyPair.ID())
+	addr := multilog.Addr("box2:") + storedrefs.Feed(srh.KeyPair.ID())
 	chkCount(srh.Private)(addr, 3)
 
-	addr = indexes.Addr("box2:") + storedrefs.Feed(tal.KeyPair.ID())
+	addr = multilog.Addr("box2:") + storedrefs.Feed(tal.KeyPair.ID())
 	chkCount(tal.Private)(addr, 4)
 
-	addr = indexes.Addr("meta:box2")
+	addr = multilog.Addr("meta:box2")
 	allBoxed, err := tal.Private.LoadInternalBitmap(addr)
 	r.NoError(err)
 	t.Log("all boxed:", allBoxed.String())
 
-	addr = indexes.Addr("box2:") + storedrefs.Feed(tal.KeyPair.ID())
+	addr = multilog.Addr("box2:") + storedrefs.Feed(tal.KeyPair.ID())
 	readable, err := tal.Private.LoadInternalBitmap(addr)
 	r.NoError(err)
 

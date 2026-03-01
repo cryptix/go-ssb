@@ -13,9 +13,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ssbc/go-luigi"
 	refs "github.com/ssbc/go-ssb-refs"
-	"github.com/ssbc/margaret"
+	margaret "github.com/ssbc/margaret/v2"
 	"github.com/stretchr/testify/require"
 	"go.mindeco.de/log"
 
@@ -92,7 +91,7 @@ func testFSCKcorrect(t *testing.T) {
 
 func testFSCKdouble(t *testing.T) {
 	r := require.New(t)
-	ctx, cancel := context.WithCancel(context.TODO())
+	_, cancel := context.WithCancel(context.TODO())
 	theBot, _ := makeFSCKTestBot(t)
 
 	// more valid messages
@@ -106,22 +105,13 @@ func testFSCKdouble(t *testing.T) {
 	// now do some nasty magic, double the log by appending it to itself again
 	// TODO: refactor to only have Add() on the bot, not the internal rootlog
 	// Add() should do the append logic
-	src, err := theBot.ReceiveLog.Query(margaret.Limit(n))
-	r.NoError(err)
-
-	for {
-		v, err := src.Next(ctx)
-		if err != nil {
-			if luigi.IsEOS(err) {
-				break
-			}
-			r.NoError(err)
-		}
-
+	qry := theBot.ReceiveLog.Query(margaret.Limit(n))
+	for _, v := range qry.Iter() {
 		seq, err := theBot.ReceiveLog.Append(v)
 		r.NoError(err)
 		t.Log("doubled:", seq)
 	}
+	r.NoError(qry.Err())
 
 	// check duplication
 	seq := theBot.ReceiveLog.Seq()
@@ -165,7 +155,7 @@ func testFSCKdouble(t *testing.T) {
 
 func testFSCKmultipleFeeds(t *testing.T) {
 	r := require.New(t)
-	ctx, cancel := context.WithCancel(context.TODO())
+	_, cancel := context.WithCancel(context.TODO())
 	theBot, _ := makeFSCKTestBot(t)
 
 	// some "correct" messages
@@ -195,26 +185,15 @@ func testFSCKmultipleFeeds(t *testing.T) {
 	}
 
 	// copy the messages from one and two (leaving "main" intact)
-	src, err := theBot.ReceiveLog.Query(
+	qry := theBot.ReceiveLog.Query(
 		margaret.Gt(int64(n-1)),
 		margaret.Limit(5))
-	r.NoError(err)
-	for {
-		v, err := src.Next(ctx)
-		if err != nil {
-			if luigi.IsEOS(err) {
-				break
-			}
-			r.NoError(err)
-		}
-
-		msg, ok := v.(refs.Message)
-		r.True(ok)
-
-		seq, err := theBot.ReceiveLog.Append(v)
+	for _, msg := range qry.Iter() {
+		seq, err := theBot.ReceiveLog.Append(msg)
 		r.NoError(err)
 		t.Log("doubled:", msg.Author().ShortSigil(), seq)
 	}
+	r.NoError(qry.Err())
 
 	err = theBot.FSCK(FSCKWithMode(FSCKModeLength))
 	r.Error(err)

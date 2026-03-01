@@ -8,14 +8,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/ssbc/go-luigi"
-	"github.com/ssbc/margaret"
-	librarian "github.com/ssbc/margaret/indexes"
+	"github.com/ssbc/margaret/v2/multilog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	kitlog "go.mindeco.de/log"
@@ -102,31 +99,23 @@ func testPublishPerAlgo(algo refs.RefAlgo) func(t *testing.T) {
 		more = src.Next(context.TODO())
 		r.False(more)
 
-		// try with seqwrapped query
+		// try with v2 query (SeqWrap removed; iterator yields (seq, value) tuples)
 		pl, ok := srv.GetMultiLog(multilogs.IndexNamePrivates)
 		r.True(ok)
 
-		userPrivs, err := pl.Get(librarian.Addr("box1:") + storedrefs.Feed(srv.KeyPair.ID()))
+		userPrivs, err := pl.Get(multilog.Addr("box1:") + storedrefs.Feed(srv.KeyPair.ID()))
 		r.NoError(err)
 
 		unboxlog := private.NewUnboxerLog(srv.ReceiveLog, userPrivs, srv.KeyPair)
 
-		lsrc, err := unboxlog.Query(margaret.SeqWrap(true))
-		r.NoError(err)
-
-		v, err := lsrc.Next(context.TODO())
-		r.NoError(err, "failed to get msg")
-
-		sw, ok := v.(margaret.SeqWrapper)
-		r.True(ok, "wrong type: %T", v)
-		wrappedVal := sw.Value()
-		wrappedMsg, ok := wrappedVal.(refs.Message)
-		r.True(ok, "wrong type: %T", wrappedVal)
-		r.Equal(wrappedMsg.Key().String(), ref.String())
-
-		v, err = lsrc.Next(context.TODO())
-		r.Error(err)
-		r.True(errors.Is(err, luigi.EOS{}))
+		qry := unboxlog.Query()
+		count := 0
+		for _, wrappedMsg := range qry.Iter() {
+			r.Equal(wrappedMsg.Key().String(), ref.String())
+			count++
+		}
+		r.NoError(qry.Err())
+		r.Equal(1, count, "expected exactly one private message")
 
 		// shutdown
 		a.NoError(c.Close())

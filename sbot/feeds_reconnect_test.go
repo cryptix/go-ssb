@@ -21,7 +21,7 @@ import (
 	"github.com/ssbc/go-ssb/internal/mutil"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
 	"github.com/ssbc/go-ssb/internal/testutils"
-	"github.com/ssbc/margaret"
+	margaret "github.com/ssbc/margaret/v2"
 )
 
 func TestFeedsLiveReconnect(t *testing.T) {
@@ -64,18 +64,18 @@ func TestFeedsLiveReconnect(t *testing.T) {
 	theBots = append(theBots, bLeafs...)
 
 	// be-friend the network
-	_, err := botA.PublishLog.Append(refs.NewContactFollow(botI.KeyPair.ID()))
+	_, err := botA.PublishLog.Publish(refs.NewContactFollow(botI.KeyPair.ID()))
 	r.NoError(err)
 	botA.Replicate(botI.KeyPair.ID())
-	_, err = botI.PublishLog.Append(refs.NewContactFollow(botA.KeyPair.ID()))
+	_, err = botI.PublishLog.Publish(refs.NewContactFollow(botA.KeyPair.ID()))
 	botI.Replicate(botA.KeyPair.ID())
 	r.NoError(err)
 	var msgCnt = 2
 
 	for i, bot := range bLeafs {
-		_, err := bot.PublishLog.Append(refs.NewContactFollow(botI.KeyPair.ID()))
+		_, err := bot.PublishLog.Publish(refs.NewContactFollow(botI.KeyPair.ID()))
 		r.NoError(err, "follow b%d>I failed", i)
-		_, err = botI.PublishLog.Append(refs.NewContactFollow(bot.KeyPair.ID()))
+		_, err = botI.PublishLog.Publish(refs.NewContactFollow(bot.KeyPair.ID()))
 		r.NoError(err, "follow I>b%d failed", i)
 		msgCnt += 2
 
@@ -100,7 +100,7 @@ func TestFeedsLiveReconnect(t *testing.T) {
 	msgCnt += extraTestMessages
 	for n := extraTestMessages; n > 0; n-- {
 		tMsg := fmt.Sprintf("some pre-setup msg %d", n)
-		_, err := botA.PublishLog.Append(refs.NewPost(tMsg))
+		_, err := botA.PublishLog.Publish(refs.NewPost(tMsg))
 		r.NoError(err)
 	}
 
@@ -118,11 +118,12 @@ func TestFeedsLiveReconnect(t *testing.T) {
 	a.EqualValues(seqOfFeedA, feedAonBotB.Seq(), "botB0 should have all of A's messages")
 
 	// setup live listener
-	liveQry, err := mutil.Indirect(botB0.ReceiveLog, feedAonBotB).Query(
+	seqSrc := mutil.Indirect(botB0.ReceiveLog, feedAonBotB).Query(
 		margaret.Gt(seqOfFeedA),
-		margaret.Live(true),
+		margaret.Live(ctx),
 	)
-	r.NoError(err)
+	gotMsg := make(chan refs.Message)
+	botgroup.Go(makeChanWaiter(ctx, seqSrc, gotMsg))
 
 	t.Log("starting live test")
 	// connect all bots to I
@@ -132,7 +133,7 @@ func TestFeedsLiveReconnect(t *testing.T) {
 	}
 	for i := 0; i < extraTestMessages; i++ {
 		tMsg := fmt.Sprintf("some fresh msg %d", i)
-		seq, err := botA.PublishLog.Append(refs.NewPost(tMsg))
+		seq, err := botA.PublishLog.Publish(refs.NewPost(tMsg))
 		r.NoError(err)
 		r.EqualValues(msgCnt+i, seq, "new msg %d", i)
 
@@ -147,23 +148,16 @@ func TestFeedsLiveReconnect(t *testing.T) {
 				timeoutCtx, _ := context.WithTimeout(ctx, 1*time.Minute)
 				err := b.Network.Connect(timeoutCtx, botI.Network.GetListenAddr())
 				r.NoError(err)
-				// cancel()
 			}(dcBot)
 		}
 
 		// received new message?
-		timeoutCtx, cancel := context.WithTimeout(ctx, time.Second)
-		v, err := liveQry.Next(timeoutCtx)
-		cancel()
-		if err != nil {
-			t.Error("liveQry err", err)
-			continue
+		select {
+		case <-time.After(time.Second):
+			t.Errorf("timeout %d....", i)
+		case msg := <-gotMsg:
+			a.EqualValues(int(seqOfFeedA+2)+i, msg.Seq(), "botB0: wrong seq")
 		}
-
-		msg, ok := v.(refs.Message)
-		r.True(ok, "got %T", v)
-
-		a.EqualValues(int(seqOfFeedA+2)+i, msg.Seq(), "botB0: wrong seq")
 	}
 
 	time.Sleep(time.Second * 3)

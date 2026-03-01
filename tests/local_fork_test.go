@@ -9,11 +9,13 @@ import (
 	"testing"
 
 	refs "github.com/ssbc/go-ssb-refs"
+	margaret "github.com/ssbc/margaret/v2"
+	"github.com/stretchr/testify/assert"
+
 	"github.com/ssbc/go-ssb/internal/mutil"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
+	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/sbot"
-	"github.com/ssbc/margaret"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestStartup(t *testing.T) {
@@ -31,10 +33,10 @@ func TestStartup(t *testing.T) {
 
 	// note (2022-02-14): this is maybe not the same mechanism of publishing as the route used when running via muxrpcs?
 	// post a message
-	_, err = bot.PublishLog.Append(refs.Post{Type: "post", Text: "1 hello world!"})
+	_, err = bot.PublishLog.Publish(refs.Post{Type: "post", Text: "1 hello world!"})
 	a.NoError(err)
 	a.EqualValues(0, botlog.Seq(), "maggie seqno of log with 1 message should be 0")
-	_, err = bot.PublishLog.Append(refs.Post{Type: "post", Text: "2 hello world!"})
+	_, err = bot.PublishLog.Publish(refs.Post{Type: "post", Text: "2 hello world!"})
 	a.NoError(err)
 	a.EqualValues(1, botlog.Seq(), "maggie seqno of log with 2 messages should be 1")
 	// close the go bot
@@ -49,12 +51,12 @@ func TestStartup(t *testing.T) {
 	bot.WaitUntilIndexesAreSynced()
 	a.EqualValues(1, botlog.Seq(), "maggie seqno of log with 2 messages should be 1")
 	// post another message
-	_, err = bot.PublishLog.Append(refs.Post{Type: "post", Text: "3 hello world!"})
+	_, err = bot.PublishLog.Publish(refs.Post{Type: "post", Text: "3 hello world!"})
 	a.NoError(err)
 	bot.WaitUntilIndexesAreSynced()
 	a.EqualValues(2, botlog.Seq(), "maggie seqno of log with 3 messages should be 2")
 	// post another message
-	_, err = bot.PublishLog.Append(refs.Post{Type: "post", Text: "4 hello world!"})
+	_, err = bot.PublishLog.Publish(refs.Post{Type: "post", Text: "4 hello world!"})
 	a.NoError(err)
 	bot.WaitUntilIndexesAreSynced()
 	a.EqualValues(3, botlog.Seq(), "maggie seqno of log with 4 messages should be 3")
@@ -73,7 +75,7 @@ func ew(header string) func(msg string, err ...error) error {
 	}
 }
 
-func getFeed(bot *sbot.Sbot, feedID refs.FeedRef) (margaret.Log, error) {
+func getFeed(bot *sbot.Sbot, feedID refs.FeedRef) (margaret.Log[*multimsg.MultiMessage], error) {
 	feed, err := bot.Users.Get(storedrefs.Feed(feedID))
 	if err != nil {
 		return nil, fmt.Errorf("get feed failed (%w)", err)

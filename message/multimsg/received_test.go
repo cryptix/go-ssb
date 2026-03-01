@@ -6,15 +6,15 @@ package multimsg
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/ssbc/go-ssb"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
 	"github.com/ssbc/go-ssb/message/legacy"
-	"github.com/ssbc/margaret/offset2"
+	"github.com/ssbc/margaret/v2/offset2"
 	"github.com/stretchr/testify/require"
 
 	gabbygrove "github.com/ssbc/go-gabbygrove"
@@ -37,16 +37,18 @@ func TestReceivedSet(t *testing.T) {
 	tPath := filepath.Join("testrun", t.Name())
 	os.RemoveAll(tPath)
 
-	log, err := offset2.Open(tPath, MargaretCodec{})
+	oLog, err := offset2.Open[*MultiMessage](tPath)
 	r.NoError(err)
 
-	wl := NewWrappedLog(log)
+	wl := NewWrappedLog(oLog)
 	fn := fakeNow{}
 	wl.receivedNow = fn.Now
 
-	bobsKey, err := ssb.NewKeyPair(nil, refs.RefAlgoFeedGabby)
+	// generate a keypair for testing without importing go-ssb root
+	pubKey, privKey, err := ed25519.GenerateKey(nil)
 	r.NoError(err)
-
+	bobsFeed, err := refs.NewFeedRefFromBytes(pubKey, refs.RefAlgoFeedGabby)
+	r.NoError(err)
 	// quirky way to make a refs.Message
 
 	msgKey, err := refs.NewMessageRefFromBytes(bytes.Repeat([]byte("acab"), 8), refs.RefAlgoMessageSSB1)
@@ -54,29 +56,26 @@ func TestReceivedSet(t *testing.T) {
 
 	var lm legacy.LegacyMessage
 	lm.Hash = "sha256"
-	lm.Author = bobsKey.ID().String()
+	lm.Author = bobsFeed.String()
 	lm.Previous = nil
 	lm.Sequence = 666
 
 	newMsg := &legacy.StoredMessage{
 		Key_:      storedrefs.SerialzedMessage{msgKey},
-		Author_:   storedrefs.SerialzedFeed{bobsKey.ID()},
+		Author_:   storedrefs.SerialzedFeed{bobsFeed},
 		Previous_: nil,
 		Sequence_: int64(lm.Sequence),
 		Raw_:      []byte(`"fakemsg"`),
 	}
 
 	fn.next = time.Unix(23, 0)
-	seq, err := wl.Append(newMsg)
+	seq, err := wl.AppendMessage(newMsg)
 	r.NoError(err)
 	r.NotNil(seq)
 
 	// retreive it
-	gotV, err := wl.Get(seq)
+	gotMsg, err := wl.Get(seq)
 	r.NoError(err)
-
-	gotMsg, ok := gotV.(refs.Message)
-	r.True(ok, "got %T", gotV)
 
 	// check the received
 	rxt := gotMsg.Received()
@@ -85,26 +84,23 @@ func TestReceivedSet(t *testing.T) {
 
 	// a gabby message
 
-	enc := gabbygrove.NewEncoder(bobsKey.Secret())
+	enc := gabbygrove.NewEncoder(ed25519.PrivateKey(privKey))
 
 	tr, ref, err := enc.Encode(1, gabbygrove.BinaryRef{}, "hello, world")
 	r.NoError(err)
 	r.NotNil(ref)
 
 	fn.next = time.Unix(42, 0)
-	ggSeq, err := wl.Append(tr)
+	ggSeq, err := wl.AppendMessage(tr)
 	r.NoError(err)
 	r.NotNil(ggSeq)
 
-	gotV, err = wl.Get(ggSeq)
+	gotMsg, err = wl.Get(ggSeq)
 	r.NoError(err)
-
-	gotMsg, ok = gotV.(refs.Message)
-	r.True(ok, "got %T", gotV)
 
 	rxt = gotMsg.Received()
 	r.NotNil(rxt)
 	r.EqualValues(42, rxt.Unix(), "time: %s", rxt)
 
-	r.NoError(log.Close())
+	r.NoError(oLog.Close())
 }

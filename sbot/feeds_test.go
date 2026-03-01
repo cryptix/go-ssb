@@ -144,7 +144,7 @@ func createFeedsOneByOneTest(useEBT bool) func(t *testing.T) {
 		}
 
 		for i := 0; i < n; i++ {
-			newSeq, err := ali.PublishLog.Append(map[string]interface{}{
+			newSeq, err := ali.PublishLog.Publish(map[string]interface{}{
 				"type": "test-value",
 				"test": i,
 			})

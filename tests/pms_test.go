@@ -99,7 +99,7 @@ func TestPrivMsgsFromGo(t *testing.T) {
 	alice := ts.startJSBot(before, "")
 
 	s.Replicate(alice)
-	newSeq, err := s.PublishLog.Append(refs.NewContactFollow(alice))
+	newSeq, err := s.PublishLog.Publish(refs.NewContactFollow(alice))
 
 	r.NoError(err, "failed to publish contact message")
 	r.NotNil(newSeq)
@@ -116,7 +116,7 @@ func TestPrivMsgsFromGo(t *testing.T) {
 		sbox, err := boxer.Encrypt(msg, alice, s.KeyPair.ID())
 		r.NoError(err, "failed to create ciphertext %d", i)
 
-		newSeq, err := s.PublishLog.Append(sbox)
+		newSeq, err := s.PublishLog.Publish(sbox)
 		r.NoError(err, "failed to publish test message %d", i)
 		r.NotNil(newSeq)
 	}
@@ -128,11 +128,9 @@ func TestPrivMsgsFromGo(t *testing.T) {
 
 	seqMsg, err := aliceLog.Get(int64(1))
 	r.NoError(err)
-	msg, err := s.ReceiveLog.Get(seqMsg.(int64))
+	msg, err := s.ReceiveLog.Get(int64(*seqMsg))
 	r.NoError(err)
-	storedMsg, ok := msg.(refs.Message)
-	r.True(ok, "wrong type of message: %T", msg)
-	r.EqualValues(2, storedMsg.Seq())
+	r.EqualValues(2, msg.Seq())
 
 	ts.wait()
 }
@@ -173,7 +171,7 @@ func TestPrivMsgsFromJS(t *testing.T) {
 	})
 `, ``)
 
-	newSeq, err := bob.PublishLog.Append(refs.NewContactFollow(alice))
+	newSeq, err := bob.PublishLog.Publish(refs.NewContactFollow(alice))
 	bob.Replicate(alice)
 
 	r.NoError(err, "failed to publish contact message")
@@ -189,12 +187,9 @@ func TestPrivMsgsFromJS(t *testing.T) {
 	for i := 0; i < n; i++ {
 		seqMsg, err := aliceLog.Get(int64(i))
 		r.NoError(err)
-		//r.Equal(seqMsg, int64(1+i))
 
-		msg, err := bob.ReceiveLog.Get(seqMsg.(int64))
+		absMsg, err := bob.ReceiveLog.Get(int64(*seqMsg))
 		r.NoError(err)
-		absMsg, ok := msg.(refs.Message)
-		r.True(ok, "wrong type of message: %T", msg)
 		r.EqualValues(i+1, absMsg.Seq())
 
 		if i == 0 {

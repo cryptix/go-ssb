@@ -24,11 +24,11 @@ import (
 // testKeyPair is a minimal keypair for tests that avoids importing the root go-ssb package (which would create an import cycle).
 type testKeyPair struct {
 	feed    refs.FeedRef
-	private *[ed25519.PrivateKeySize]byte
+	private ed25519.PrivateKey
 }
 
-func (kp testKeyPair) ID() refs.FeedRef              { return kp.feed }
-func (kp testKeyPair) Secret() *[ed25519.PrivateKeySize]byte { return kp.private }
+func (kp testKeyPair) ID() refs.FeedRef            { return kp.feed }
+func (kp testKeyPair) Secret() ed25519.PrivateKey   { return kp.private[:] }
 
 func newTestKeyPair(r io.Reader) (testKeyPair, error) {
 	if r == nil {
@@ -42,9 +42,7 @@ func newTestKeyPair(r io.Reader) (testKeyPair, error) {
 	if err != nil {
 		return testKeyPair{}, err
 	}
-	var sec [ed25519.PrivateKeySize]byte
-	copy(sec[:], privKey)
-	return testKeyPair{feed: feed, private: &sec}, nil
+	return testKeyPair{feed: feed, private: ed25519.PrivateKey(privKey)}, nil
 }
 
 func TestSignatureVerify(t *testing.T) {
