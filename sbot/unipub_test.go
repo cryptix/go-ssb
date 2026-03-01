@@ -14,8 +14,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ssbc/go-luigi"
-	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/stretchr/testify/require"
 
 	"github.com/ssbc/go-ssb/internal/leakcheck"
@@ -58,25 +56,20 @@ func TestPublishUnicode(t *testing.T) {
 	newMsg := post{
 		"post", string(txt),
 	}
-	_, err = ali.PublishLog.Append(newMsg)
+	_, err = ali.PublishLog.Publish(newMsg)
 	r.NoError(err)
 
-	src, err := ali.ReceiveLog.Query()
-	r.NoError(err)
+	qry := ali.ReceiveLog.Query()
 	var i = 0
-	for {
-		v, err := src.Next(ctx)
-		if luigi.IsEOS(err) {
-			break
-		}
-		sm := v.(refs.Message)
+	for _, msg := range qry.Iter() {
 		var p post
-		c := sm.ContentBytes()
+		c := msg.ContentBytes()
 		err = json.Unmarshal(c, &p)
 		r.NoError(err)
 		r.Equal(newMsg.Text, p.Text)
 		i++
 	}
+	r.NoError(qry.Err())
 	r.Equal(i, 1)
 
 	ali.Shutdown()

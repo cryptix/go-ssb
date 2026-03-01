@@ -6,7 +6,8 @@ package plugins2
 
 import (
 	"github.com/ssbc/go-ssb"
-	"github.com/ssbc/margaret"
+	margaret "github.com/ssbc/margaret/v2"
+	"github.com/ssbc/go-ssb/message/multimsg"
 )
 
 type AuthMode uint
@@ -23,7 +24,7 @@ const (
 )
 
 type NeedsRootLog interface {
-	WantRootLog(rl margaret.Log) error
+	WantRootLog(rl margaret.Log[*multimsg.MultiMessage]) error
 }
 
 type NeedsMultiLog interface {

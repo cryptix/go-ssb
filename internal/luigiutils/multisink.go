@@ -9,7 +9,7 @@ import (
 	"sync"
 
 	"github.com/ssbc/go-muxrpc/v2"
-	"github.com/ssbc/margaret"
+	margaret "github.com/ssbc/margaret/v2"
 )
 
 // MultiSink takes each message poured into it, and passes it on to all

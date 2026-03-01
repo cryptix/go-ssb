@@ -7,15 +7,14 @@ package sbot
 import (
 	"context"
 	"crypto/rand"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/ssbc/go-luigi"
 	refs "github.com/ssbc/go-ssb-refs"
-	"github.com/ssbc/margaret"
+	margaret "github.com/ssbc/margaret/v2"
+	"github.com/ssbc/margaret/v2/multilog/roaring"
 	"github.com/stretchr/testify/require"
 	"go.mindeco.de/log"
 	kitlog "go.mindeco.de/log"
@@ -98,11 +97,11 @@ func TestNullFeed(t *testing.T) {
 	}
 
 	// assert helper
-	checkLogSeq := func(l margaret.Log, seq int) {
+	checkLogSeq := func(l interface{ Seq() int64 }, seq int) {
 		r.EqualValues(seq, l.Seq())
 	}
 
-	getUserLog := func(bot *Sbot, name string) margaret.Log {
+	getUserLog := func(bot *Sbot, name string) margaret.Log[*roaring.Seq] {
 		kp, has := n2kp[name]
 		r.True(has, "%s not in map", name)
 
@@ -165,19 +164,20 @@ func TestNullFeed(t *testing.T) {
 	r.NoError(err)
 
 	gotMessage := make(chan struct{})
-	updateSink := luigi.FuncSink(func(ctx context.Context, v interface{}, err error) error {
-		seq, ok := v.(int64)
-		if !ok {
-			return fmt.Errorf("unexpected type:%T", v)
-		}
-		s := seq
-		if s == testMsgCount-1 { // 0 indexed
-			close(gotMessage)
-		}
-		return err
-	})
 	betsLog := getUserLog(mainbot, "bert")
-	done := betsLog.Changes().Register(updateSink)
+	go func() {
+		for {
+			if betsLog.Seq() >= int64(testMsgCount-1) {
+				close(gotMessage)
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	}()
 
 	select {
 	case <-time.After(25 * time.Second):
@@ -186,7 +186,6 @@ func TestNullFeed(t *testing.T) {
 	case <-gotMessage:
 		t.Log("re-synced feed")
 	}
-	done()
 
 	bertBot.Shutdown()
 	mainbot.Shutdown()
@@ -270,17 +269,19 @@ func TestNullFetched(t *testing.T) {
 	mainLog.Log("msg", "check we got all the messages")
 
 	gotMessage := make(chan struct{})
-	updateSink := luigi.FuncSink(func(ctx context.Context, v interface{}, err error) error {
-		seq, ok := v.(int64)
-		if !ok {
-			return fmt.Errorf("unexpected type:%T", v)
+	go func() {
+		for {
+			if alisVersionOfBobsLog.Seq() >= msgCount-1 {
+				close(gotMessage)
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
 		}
-		if int64(seq) == msgCount-1 {
-			close(gotMessage)
-		}
-		return err
-	})
-	done := alisVersionOfBobsLog.Changes().Register(updateSink)
+	}()
 
 	select {
 	case <-time.After(25 * time.Second):
@@ -289,7 +290,6 @@ func TestNullFetched(t *testing.T) {
 	case <-gotMessage:
 		t.Log("synced feed")
 	}
-	done()
 
 	ali.Network.GetConnTracker().CloseAll()
 	bob.Network.GetConnTracker().CloseAll()
@@ -318,18 +318,20 @@ func TestNullFetched(t *testing.T) {
 
 	// start := time.Now()
 	gotMessage = make(chan struct{})
-	updateSink = luigi.FuncSink(func(ctx context.Context, v interface{}, err error) error {
-		seq, ok := v.(int64)
-		if !ok {
-			return fmt.Errorf("unexpected type:%T", v)
+	go func() {
+		for {
+			if alisVersionOfBobsLog.Seq() >= msgCount-1 {
+				close(gotMessage)
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
 		}
-		if int64(seq) == msgCount-1 {
-			close(gotMessage)
-		}
-		return err
-	})
+	}()
 
-	done = alisVersionOfBobsLog.Changes().Register(updateSink)
 	select {
 	case <-time.After(25 * time.Second):
 		t.Error("sync timeout (2)")
@@ -337,7 +339,6 @@ func TestNullFetched(t *testing.T) {
 	case <-gotMessage:
 		t.Log("re-synced feed")
 	}
-	done()
 
 	ali.Shutdown()
 	bob.Shutdown()

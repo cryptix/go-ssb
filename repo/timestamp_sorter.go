@@ -17,7 +17,6 @@ import (
 
 	bmap "github.com/dgraph-io/sroar"
 	"github.com/ssbc/go-luigi"
-	"github.com/ssbc/margaret"
 
 	refs "github.com/ssbc/go-ssb-refs"
 )
@@ -105,36 +104,14 @@ func NewSequenceResolver(r Interface) (*SequenceResolver, error) {
 	return &sr, nil
 }
 
-// NewSequenceResolverFromLog creates a fresh resolver reading the full margaret log.
-// Expects to read refs.Message from the log.
+// NewSequenceResolverFromMessages creates a fresh resolver from a slice of messages.
 // Useful for testing.
-func NewSequenceResolverFromLog(l margaret.Log) (*SequenceResolver, error) {
-	ctx := context.Background()
-
+func NewSequenceResolverFromMessages(msgs []refs.Message) (*SequenceResolver, error) {
 	start := time.Now()
 
 	var sr SequenceResolver
 
-	src, err := l.Query()
-	if err != nil {
-		return nil, err
-	}
-
-	for {
-		v, err := src.Next(ctx)
-		if err != nil {
-			if luigi.IsEOS(err) {
-				break
-			}
-			return nil, err
-		}
-
-		msg, ok := v.(refs.Message)
-		if !ok {
-			return nil, fmt.Errorf("ts: wrong type: %T", v)
-		}
-
-		// TODO: seqWrap and use sr.Append()
+	for _, msg := range msgs {
 		sr.seq2claimed = append(sr.seq2claimed, msg.Claimed().Unix())
 		sr.seq2received = append(sr.seq2received, msg.Received().Unix())
 		sr.seq2feedseq = append(sr.seq2feedseq, msg.Seq())

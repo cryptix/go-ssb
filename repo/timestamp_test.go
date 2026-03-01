@@ -11,30 +11,29 @@ import (
 	"time"
 
 	"github.com/ssbc/go-luigi"
+	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/repo"
-	"github.com/ssbc/margaret/mem"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	refs "github.com/ssbc/go-ssb-refs"
 )
 
 func TestTimestampSorting(t *testing.T) {
 	r := require.New(t)
 	a := assert.New(t)
 
-	rxlog := mem.New()
+	var msgs []refs.Message
 	var allSeqs []int64
 
-	// make log with messages in reverse chronological order
+	// make messages in reverse chronological order
 	for i := 10000; i > 0; i -= 1000 {
-		seq, err := rxlog.Append(mkTestMessage(i))
-		r.NoError(err)
+		msg := mkTestMessage(i)
+		seq := int64(len(msgs))
+		msgs = append(msgs, msg)
 		t.Log(seq, i)
-		allSeqs = append(allSeqs, int64(seq))
+		allSeqs = append(allSeqs, seq)
 	}
 
-	sorter, err := repo.NewSequenceResolverFromLog(rxlog)
+	sorter, err := repo.NewSequenceResolverFromMessages(msgs)
 	r.NoError(err, "failed to get sliced array")
 
 	under9000 := func(v int64) bool {

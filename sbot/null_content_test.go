@@ -167,9 +167,9 @@ func XTestNullContentRequest(t *testing.T) {
 	r.NoError(err)
 	t.Log(string(v))
 
-	msg, err = mainbot.Get(msg.Key())
+	gotMsg, err := mainbot.Get(msg.Key())
 	r.NoError(err)
-	origContent := msg.ContentBytes()
+	origContent := gotMsg.ContentBytes()
 	a.NotNil(origContent)
 
 	del, err := mainbot.PublishAs("bert", dropContent)
@@ -182,14 +182,14 @@ func XTestNullContentRequest(t *testing.T) {
 	logger.Log("msg", "waited")
 
 	// aaand it's gone
-	msg, err = mainbot.Get(msg.Key())
+	gotMsg, err = mainbot.Get(msg.Key())
 	r.NoError(err)
-	nulledContent := msg.ContentBytes()
+	nulledContent := gotMsg.ContentBytes()
 	a.Nil(nulledContent, "content not nil")
 	a.NotEqual(origContent, nulledContent, "content still the same!")
 	logger.Log("msg", "checked")
-	a.NotNil(msg.Author(), "author is still there")
-	a.NotNil(msg.Seq(), "sequence is still there")
+	a.NotNil(gotMsg.Author(), "author is still there")
+	a.NotNil(gotMsg.Seq(), "sequence is still there")
 
 	// can't delete a delete
 	cantDropThis := ssb.NewDropContentRequest(6, del.Key())
@@ -202,9 +202,9 @@ func XTestNullContentRequest(t *testing.T) {
 	t.Log("invalid dcr:", del2.Key().String())
 
 	// not gone
-	msg, err = mainbot.Get(del2.Key())
+	gotMsg, err = mainbot.Get(del2.Key())
 	r.NoError(err)
-	a.NotNil(msg.ContentBytes())
+	a.NotNil(gotMsg.ContentBytes())
 
 	mainbot.Shutdown()
 	r.NoError(mainbot.Close())

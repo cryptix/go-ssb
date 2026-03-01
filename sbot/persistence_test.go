@@ -17,7 +17,6 @@ import (
 	"github.com/ssbc/go-ssb/internal/leakcheck"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
 	"github.com/ssbc/go-ssb/internal/testutils"
-	"github.com/ssbc/margaret"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mindeco.de/log"
@@ -129,7 +128,7 @@ func TestPersistence(t *testing.T) {
 	r.NoError(err)
 	r.Len(feeds, 3)
 
-	checkLogSeq := func(l margaret.Log) {
+	checkLogSeq := func(l interface{ Seq() int64 }) {
 		r.EqualValues(testMsgCount-1, l.Seq())
 	}
 

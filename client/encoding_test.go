@@ -14,7 +14,7 @@ import (
 	"testing"
 
 	"github.com/ssbc/go-muxrpc/v2"
-	"github.com/ssbc/margaret"
+	margaret "github.com/ssbc/margaret/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
