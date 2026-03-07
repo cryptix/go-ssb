@@ -161,7 +161,7 @@ func (h *MUXRPCHandler) Loop(ctx context.Context, tx *muxrpc.ByteSink, rx *muxrp
 	defer func() {
 		h.Sessions.Ended(remoteAddr)
 
-		level.Debug(peerLogger).Log("event", "loop exited")
+		level.Debug(peerLogger).Log("event", "loop exited", "rx-err", rx.Err())
 		err := h.stateMatrix.SaveAndClose(peer)
 		if err != nil {
 			level.Warn(h.info).Log("event", "failed to save state matrix for peer", "err", err)

@@ -25,7 +25,7 @@ import (
 	"github.com/ssbc/go-ssb/sbot"
 )
 
-func XTestEpidemicBroadcastTrees(t *testing.T) {
+func TestEpidemicBroadcastTrees(t *testing.T) {
 	r := require.New(t)
 
 	// ts := newRandomSession(t)
@@ -34,7 +34,7 @@ func XTestEpidemicBroadcastTrees(t *testing.T) {
 	// info := testutils.NewRelativeTimeLogger(nil)
 	var peerCnt = 0
 	ts.startGoBot(
-		sbot.DisableEBT(false),
+		sbot.EBTOnly(true),
 		sbot.WithPostSecureConnWrapper(func(conn net.Conn) (net.Conn, error) {
 			fr, err := ssb.GetFeedRefFromAddr(conn.RemoteAddr())
 			if err != nil {
@@ -105,7 +105,7 @@ func XTestEpidemicBroadcastTrees(t *testing.T) {
 					pull.drain((msg) => {
 						t.comment('\t\talice got from spam feed:' + feed)
 						if (msg.value.content.type == 'spam') {
-							t.comment(JSON.tringify(msg.value.content))
+							t.comment(JSON.stringify(msg.value.content))
 							if (msg.value.content.i > 15) {
 								t.ok(true, 'got enough')
 								sbot.publish({type:'done'}, (err) => {
@@ -185,12 +185,8 @@ func XTestEpidemicBroadcastTrees(t *testing.T) {
 
 	sbot.Replicate(followTest.ID)
 
-	// TODO: we shouldnt need this reconnect
-	// but right now the ebt want-clock isn't resent on Replicate() calls alone
-	connCancel()
-	connCtx, connCancel = context.WithCancel(context.TODO())
-	err = sbot.Network.Connect(connCtx, wrappedAddr)
-	r.NoError(err, "connect #2 failed")
+	// PushState sends updated want-clock to active EBT sessions immediately
+	// so no reconnect is needed here
 
 	// query for follow-test msgs
 
