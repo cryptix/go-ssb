@@ -285,9 +285,6 @@ func TestFeedsLiveNetworkStar(t *testing.T) {
 }
 
 func XTestFeedsLiveNetworkDiamond(t *testing.T) {
-	if os.Getenv("LIBRARIAN_WRITEALL") != "0" {
-		t.Fatal("please 'export LIBRARIAN_WRITEALL=0' for this test to pass")
-	}
 	r := require.New(t)
 	a := assert.New(t)
 	os.RemoveAll(filepath.Join("testrun", t.Name()))

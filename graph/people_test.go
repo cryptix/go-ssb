@@ -9,16 +9,17 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	margaret "github.com/ssbc/margaret/v2"
+
 	"github.com/ssbc/go-ssb"
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
-	"github.com/ssbc/go-ssb/multilogs"
+	"github.com/ssbc/go-ssb/message/multimsg"
 )
 
 type PeopleOp interface {
@@ -254,10 +255,13 @@ func (tc PeopleTestCase) run(mk func(t *testing.T) testStore) func(t *testing.T)
 		for i, op := range tc.ops {
 			err := op.Op(&state)
 			r.NoError(err, "error performing operation(%d) of %v type %T: %s", i, op, op)
-		}
 
-		// wait for the multilogs to catch up
-		multilogs.WaitUntilUserFeedIndexIsSynced()
+			// flush graph indexes after each op (incremental; tracks last processed seq)
+			for _, idx := range state.store.indexers {
+				err := idx.Index(margaret.Log[*multimsg.MultiMessage](state.store.root))
+				r.NoError(err, "failed to flush graph index after op %d", i)
+			}
+		}
 
 		// punch in nicks
 		g, err := state.store.gbuilder.Build()
@@ -287,11 +291,6 @@ func (tc PeopleTestCase) run(mk func(t *testing.T) testStore) func(t *testing.T)
 }
 
 func TestPeople(t *testing.T) {
-	if os.Getenv("LIBRARIAN_WRITEALL") != "0" {
-		t.Fatal("please 'export LIBRARIAN_WRITEALL=0' for this test to pass")
-		// TODO: expose index flushing
-	}
-
 	tcs := []PeopleTestCase{
 		{
 			name: "simple",

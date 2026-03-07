@@ -22,11 +22,6 @@ import (
 )
 
 func TestNames(t *testing.T) {
-	if os.Getenv("LIBRARIAN_WRITEALL") != "0" {
-		t.Fatal("please 'export LIBRARIAN_WRITEALL=0' for this test to pass")
-		// TODO: expose index flushing
-	}
-
 	defer leakcheck.Check(t)
 	r := require.New(t)
 

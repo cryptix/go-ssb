@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/ssbc/margaret/v2/multilog"
 	"github.com/stretchr/testify/assert"
@@ -78,18 +79,19 @@ func testPublishPerAlgo(algo refs.RefAlgo) func(t *testing.T) {
 		r.NoError(err, "failed to publish")
 		r.NotNil(ref)
 
+		// wait for the private index to catch up
+		time.Sleep(500 * time.Millisecond)
+
 		src, err := c.PrivateRead()
 		r.NoError(err, "failed to open private stream")
 
 		count := 0
 		var savedMsg refs.KeyValueRaw
 		for rawMsg := range src.Iter(context.TODO()) {
-			t.Logf("got raw msg (%d bytes): %s", len(rawMsg), string(rawMsg))
 			err = json.Unmarshal(rawMsg, &savedMsg)
 			r.NoError(err, "failed to unpack msg")
 			count++
 		}
-		t.Logf("stream error after iter: %v", src.Err())
 		r.Equal(1, count, "expected exactly one private message from stream")
 
 		if !a.True(savedMsg.Key().Equal(ref)) {

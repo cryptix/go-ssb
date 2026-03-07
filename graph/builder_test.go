@@ -165,11 +165,6 @@ func (tc testStore) theScenario(t *testing.T) {
 	alice.follow(claire.key.ID())
 	tc.reindex(t)
 
-	if os.Getenv("LIBRARIAN_WRITEALL") != "0" {
-		t.Fatal("please 'export LIBRARIAN_WRITEALL=0' for this test to pass")
-		// TODO: expose index flushing
-	}
-
 	g, err = tc.gbuilder.Build()
 	r.NoError(err)
 	r.Equal(4, g.NodeCount())
