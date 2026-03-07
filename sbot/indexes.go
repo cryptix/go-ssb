@@ -113,8 +113,18 @@ func (s *Sbot) serveIndexFrom(name string, idx LogIndexer, msgs margaret.Log[*mu
 	s.indexStates[name] = "pending"
 	s.indexStateMu.Unlock()
 
-	s.idxDone.Go(func() error {
+	s.idxDone.Go(func() (retErr error) {
 		logger := log.With(s.info, "index", name)
+
+		defer func() {
+			if r := recover(); r != nil {
+				retErr = fmt.Errorf("sbot index(%s) panicked: %v", name, r)
+				level.Error(logger).Log("event", "index panic", "err", retErr)
+				s.indexStateMu.Lock()
+				s.indexStates[name] = retErr.Error()
+				s.indexStateMu.Unlock()
+			}
+		}()
 
 		// Process backlog
 		totalMessages := msgs.Seq()

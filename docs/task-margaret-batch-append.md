@@ -118,3 +118,34 @@ work but are not the common case.
 A branch of margaret that go-ssb can reference in `go.mod` via a `replace`
 directive or a tagged pre-release version. The branch should be based on the
 current margaret version used by go-ssb (`github.com/ssbc/margaret/v2`).
+
+## Additional Bug: Panic in `offset2.readEntry` on Corrupted Data
+
+Observed panic on startup:
+
+```
+panic: runtime error: makeslice: len out of range
+
+goroutine 46 [running]:
+github.com/ssbc/margaret/v2/offset2.(*Log[...]).readEntry(0x1, 0x1195500?)
+	margaret/offset2/log.go:256 +0x132
+github.com/ssbc/margaret/v2/offset2.(*Log[...]).Get(0x119fde0?, 0x0)
+	margaret/offset2/log.go:219 +0x105
+github.com/ssbc/margaret/v2/offset2.(*Log[...]).querySnapshot.func3()
+	margaret/offset2/qry.go:68 +0x165
+```
+
+`readEntry` reads a length prefix from the data file and uses it directly in
+`make([]byte, length)`. If the log file is corrupted (truncated write, partial
+fsync, etc.), the length can be negative or absurdly large, causing a panic
+instead of returning an error.
+
+**Fix needed**: Validate the length before `make()`:
+- Must be >= 0
+- Must be <= remaining bytes in the file (or a reasonable max like 64MB)
+- Return `fmt.Errorf("corrupt entry at offset %d: invalid length %d", ...)`
+  instead of panicking
+
+This is especially important for `AppendBatch` — if a batch write is
+interrupted mid-way, the recovery path must not panic when reading the
+partially written data.
