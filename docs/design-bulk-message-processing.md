@@ -247,13 +247,31 @@ fill (or a new `updateNoEBT()` variant).
 
 ### Batch Accumulation: Where and How
 
+**Constraint**: Both `margaret.QueryIterator.Iter()` and `muxrpc.ByteSource.Iter()`
+yield one item per iteration. There is no upstream "read N items" API. Batching
+must be done by collecting items from the iterator into a slice before processing.
+
+**Batch size**: 128 messages (count-based). Real-world replication data shows
+feeds ranging from 8-1209 messages per sync. A batch of 128 gives 1-10 batches
+for typical feeds, balancing throughput against memory and latency:
+
+```
+@3BLi: 286 msgs → 3 batches (128+128+30)
+@plSv: 665 msgs → 6 batches
+@kcsI: 1209 msgs → 10 batches
+@71Ro: 12 msgs → 1 batch (flushed at end)
+```
+
 **File**: `plugins/ebt/handler.go` (EBT path)
+
+EBT is trickier because the same stream carries both frontier updates and
+messages from different authors. Messages must be accumulated and grouped
+by author before batch processing.
 
 ```go
 // In the Loop() method, replace the per-message processing:
 
-const batchSize = 64
-const batchTimeout = 10 * time.Millisecond
+const batchSize = 128
 
 // Accumulate messages per-feed before processing
 type pendingMsg struct {
@@ -261,18 +279,17 @@ type pendingMsg struct {
     raw    []byte
 }
 batch := make([]pendingMsg, 0, batchSize)
-timer := time.NewTimer(batchTimeout)
 
 // Group by author, then verify+save each group as a batch
 func (h *MUXRPCHandler) processBatch(batch []pendingMsg) {
     // Group by author
-    byAuthor := map[string][]rawMsg{}
+    byAuthor := map[string][]pendingMsg{}
     for _, m := range batch {
         key := m.author.String()
         byAuthor[key] = append(byAuthor[key], m)
     }
 
-    for authorStr, msgs := range byAuthor {
+    for _, msgs := range byAuthor {
         sink, _ := h.verify.GetSink(msgs[0].author, true)
         raws := extractRawBytes(msgs)
         verified, _ := sink.VerifyBatch(raws)
@@ -281,12 +298,20 @@ func (h *MUXRPCHandler) processBatch(batch []pendingMsg) {
 }
 ```
 
+When a frontier update arrives mid-batch, flush the pending message batch
+first, then process the frontier update. This ensures messages verified
+before state changes.
+
 **File**: `plugins/gossip/fetch.go` (Legacy gossip path)
+
+Legacy gossip is simpler: `fetchFeed()` processes a single feed at a time,
+so all messages in the batch share the same author. Just collect from the
+iterator and flush at batch size.
 
 ```go
 // In fetchFeed(), replace the per-message loop:
 
-const fetchBatchSize = 64
+const fetchBatchSize = 128
 
 batch := make([][]byte, 0, fetchBatchSize)
 for b := range src.Iter(ctx) {
@@ -335,37 +360,43 @@ This means we can land changes incrementally:
 
 ## Expected Impact
 
-| Metric | Current (per 1000 msgs) | After batching (batch=64) | Reduction |
+| Metric | Current (per 1000 msgs) | After batching (batch=128) | Reduction |
 |--------|------------------------|---------------------------|-----------|
-| rxlog fsync calls | 1000 | ~16 | 98% |
-| CombinedIndex lock acquisitions | 1000 | ~16 | 98% |
-| persist.Save() calls | 1000 | ~16 | 98% |
-| ebtState.Fill() calls | 1000 | ~16 | 98% |
-| verify mutex acquisitions | 1000/feed | ~16/feed | 98% |
+| rxlog fsync calls | 1000 | ~8 | 99% |
+| CombinedIndex lock acquisitions | 1000 | ~8 | 99% |
+| persist.Save() calls | 1000 | ~8 | 99% |
+| ebtState.Fill() calls | 1000 | ~8 | 99% |
+| verify mutex acquisitions | 1000/feed | ~8/feed | 99% |
 
 The primary bottleneck today is I/O (fsync per append) and lock contention.
-Batching addresses both directly. The batch size of 64 is a starting point —
-it should be tunable and can be adjusted based on profiling.
+Batching addresses both directly.
 
-## Open Questions
+## Decisions Made
 
-1. **Margaret AppendBatch**: Do we fork/contribute upstream, or write a
-   coalescing wrapper? A wrapper adds complexity but avoids upstream coupling.
+1. **Batch size**: 128, count-based. Real replication data shows feeds of
+   8-1209 messages. 128 gives good amortization without excessive memory use.
 
-2. **Error semantics in batch verify**: If message 47 of 64 fails verification,
+2. **Margaret AppendBatch**: Separate task assigned to another agent. Will
+   deliver a branch we can `replace` in go.mod. See
+   `docs/task-margaret-batch-append.md`.
+
+3. **Iterator constraint**: margaret and muxrpc iterators yield one item at a
+   time. Batching is done by collecting items into a slice at the call site,
+   not by changing the iterator API.
+
+## Remaining Open Questions
+
+1. **Error semantics in batch verify**: If message 47 of 128 fails verification,
    do we save the first 46 and return an error? This is the proposed behavior
    since feeds are sequential and a bad message invalidates everything after it.
 
-3. **Batch size tuning**: 64 is arbitrary. Should we use time-based batching
-   (flush every 10ms) or count-based, or both? Time-based is better for
-   variable-rate streams; hybrid (flush on count OR timeout) is ideal.
-
-4. **Interaction with live queries**: The `serveIndex` live path uses
+2. **Interaction with live queries**: The `serveIndex` live path uses
    `margaret.Live()` which fires per-append. With bulk append, does it fire once
-   per batch or once per entry? This affects the 100ms debounce logic. Needs
-   investigation of margaret's live query implementation.
+   per batch or once per entry? This affects the 100ms debounce logic. The
+   margaret task document requests single-notification-per-batch as preferred
+   behavior.
 
-5. **Publish path**: Should `publishLog.Publish()` also batch? Probably not —
-   publishes are infrequent and need immediate consistency. But the async index
-   race (the `lastMsg` cache workaround) would be naturally solved if we had
-   synchronous batch indexing after batch append.
+3. **Publish path**: No batching needed — publishes are infrequent and need
+   immediate consistency. The async index race (`lastMsg` cache workaround)
+   would be naturally solved if we had synchronous batch indexing after batch
+   append.
