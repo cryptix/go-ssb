@@ -29,13 +29,22 @@ func (sbot *Sbot) Replicate(r refs.FeedRef) {
 		panic(err)
 	}
 
-	l := slog.Seq()
+	// convert margaret 0-indexed to SSB 1-indexed sequence
+	seq := slog.Seq()
+	if seq != -1 {
+		seq++
+	}
 
 	sbot.ebtState.Fill(sbot.KeyPair.ID(), []statematrix.ObservedFeed{
-		{Feed: r, Note: ssb.Note{Seq: l, Receive: true, Replicate: true}},
+		{Feed: r, Note: ssb.Note{Seq: seq, Receive: true, Replicate: true}},
 	})
 
 	sbot.Replicator.Replicate(r)
+
+	// push updated want-clock to active EBT sessions
+	if sbot.ebtHandler != nil {
+		sbot.ebtHandler.PushState()
+	}
 }
 
 func (sbot *Sbot) DontReplicate(r refs.FeedRef) {
@@ -44,13 +53,22 @@ func (sbot *Sbot) DontReplicate(r refs.FeedRef) {
 		panic(err)
 	}
 
-	l := slog.Seq()
+	// convert margaret 0-indexed to SSB 1-indexed sequence
+	seq := slog.Seq()
+	if seq != -1 {
+		seq++
+	}
 
 	sbot.ebtState.Fill(sbot.KeyPair.ID(), []statematrix.ObservedFeed{
-		{Feed: r, Note: ssb.Note{Seq: l, Receive: false, Replicate: true}},
+		{Feed: r, Note: ssb.Note{Seq: seq, Receive: false, Replicate: true}},
 	})
 
 	sbot.Replicator.DontReplicate(r)
+
+	// push updated want-clock to active EBT sessions
+	if sbot.ebtHandler != nil {
+		sbot.ebtHandler.PushState()
+	}
 }
 
 type graphReplicator struct {

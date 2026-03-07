@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"iter"
 	"os"
 	"path/filepath"
 	"testing"
@@ -82,24 +81,22 @@ func testPublishPerAlgo(algo refs.RefAlgo) func(t *testing.T) {
 		src, err := c.PrivateRead()
 		r.NoError(err, "failed to open private stream")
 
-		next, stop := iter.Pull(src.Iter(context.TODO()))
-		defer stop()
-
-		rawMsg, ok := next()
-		r.True(ok, "expected to get a message")
-
+		count := 0
 		var savedMsg refs.KeyValueRaw
-		err = json.Unmarshal(rawMsg, &savedMsg)
-		r.NoError(err, "failed to unpack msg")
+		for rawMsg := range src.Iter(context.TODO()) {
+			t.Logf("got raw msg (%d bytes): %s", len(rawMsg), string(rawMsg))
+			err = json.Unmarshal(rawMsg, &savedMsg)
+			r.NoError(err, "failed to unpack msg")
+			count++
+		}
+		t.Logf("stream error after iter: %v", src.Err())
+		r.Equal(1, count, "expected exactly one private message from stream")
 
 		if !a.True(savedMsg.Key().Equal(ref)) {
 			whoops, err := srv.Get(ref)
 			r.NoError(err)
 			t.Log(string(whoops.ContentBytes()))
 		}
-
-		_, ok = next()
-		r.False(ok)
 
 		// try with v2 query (SeqWrap removed; iterator yields (seq, value) tuples)
 		pl, ok := srv.GetMultiLog(multilogs.IndexNamePrivates)
@@ -111,7 +108,7 @@ func testPublishPerAlgo(algo refs.RefAlgo) func(t *testing.T) {
 		unboxlog := private.NewUnboxerLog(srv.ReceiveLog, userPrivs, srv.KeyPair)
 
 		qry := unboxlog.Query()
-		count := 0
+		count = 0
 		for _, wrappedMsg := range qry.Iter() {
 			r.Equal(wrappedMsg.Key().String(), ref.String())
 			count++

@@ -11,22 +11,27 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ssbc/go-muxrpc/v3"
 	refs "github.com/ssbc/go-ssb-refs"
 )
 
 type session struct {
 	remote net.Addr // netwrap'ed shs address
 
-	// tx *muxrpc.ByteSink // the muxrpc writer to send updates
+	peer refs.FeedRef
+
+	tx *muxrpc.ByteSink // the muxrpc writer to send updates
 
 	// which feeds this session is currently subscribed to
-	mu         sync.Mutex // since the session is only used inside the ebt handler loop, we might not even need this lock
+	mu         sync.Mutex
 	subscribed map[string]context.CancelFunc
 }
 
-func newSession(remote net.Addr) *session {
+func newSession(remote net.Addr, peer refs.FeedRef, tx *muxrpc.ByteSink) *session {
 	return &session{
 		remote: remote,
+		peer:   peer,
+		tx:     tx,
 
 		subscribed: make(map[string]context.CancelFunc),
 	}
@@ -46,8 +51,8 @@ func (s *session) Subscribed(feed refs.FeedRef, cancelFn context.CancelFunc) {
 	s.subscribed[fr] = cancelFn
 }
 
-// Unubscribe checks to see if there is one and cancels it
-func (s *session) Unubscribe(feed refs.FeedRef) {
+// Unsubscribe checks to see if there is one and cancels it
+func (s *session) Unsubscribe(feed refs.FeedRef) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -67,14 +72,14 @@ type Sessions struct {
 
 // Started registers a new session for the network address and returns it.
 // It also closes open channels in waitingFor if they exist and thus makes WaitFor() calls return.
-func (s *Sessions) Started(addr net.Addr) *session {
+func (s *Sessions) Started(addr net.Addr, peer refs.FeedRef, tx *muxrpc.ByteSink) *session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	// we are using the full ip:port~pubkey notation as the map key
 	mk := addr.String()
 
-	session := newSession(addr)
+	session := newSession(addr, peer, tx)
 
 	s.open[mk] = session
 
@@ -95,6 +100,16 @@ func (s *Sessions) Ended(addr net.Addr) {
 	mk := addr.String()
 
 	delete(s.open, mk)
+}
+
+// ForEach calls fn for each active session while holding the lock.
+func (s *Sessions) ForEach(fn func(sess *session)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, sess := range s.open {
+		fn(sess)
+	}
 }
 
 // WaitFor returns true if addr manages to start a session before durration passes

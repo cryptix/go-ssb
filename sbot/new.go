@@ -148,7 +148,8 @@ type Sbot struct {
 	indexStateMu     sync.Mutex
 	indexStates      map[string]string
 
-	ebtState *statematrix.StateMatrix
+	ebtState   *statematrix.StateMatrix
+	ebtHandler *ebt.MUXRPCHandler
 
 	verifyRouter *message.VerificationRouter
 
@@ -679,6 +680,7 @@ func New(fopts ...Option) (*Sbot, error) {
 			s.verifyRouter,
 		)
 		s.public.Register(ebtPlug)
+		s.ebtHandler = ebtPlug.MUXRPCHandler
 
 		rn := negPlugin{replicateNegotiator{
 			logger: log.With(s.info, "module", "replicate-negotiator"),

@@ -39,9 +39,7 @@ func (s Note) MarshalJSON() ([]byte, error) {
 		i = 0
 	}
 	i = i << 1 // times 2 (to make room for the rx bit)
-	if s.Receive {
-		i |= 0
-	} else {
+	if !s.Receive {
 		i |= 1
 	}
 	return []byte(strconv.FormatInt(i, 10)), nil

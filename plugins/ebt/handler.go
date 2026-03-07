@@ -106,9 +106,17 @@ func (h *MUXRPCHandler) HandleCall(ctx context.Context, req *muxrpc.Request) {
 }
 
 func (h *MUXRPCHandler) sendState(ctx context.Context, tx *muxrpc.ByteSink, remote refs.FeedRef) error {
-	currState, err := h.stateMatrix.Changed(h.self, remote)
+	// send our full frontier - the peer will decide what to act on.
+	// over-sending is safe; under-sending (filtering based on stale peer data) can cause missed feeds.
+	selfNf, err := h.stateMatrix.Inspect(h.self)
 	if err != nil {
-		return fmt.Errorf("failed to get changed frontier: %w", err)
+		return fmt.Errorf("failed to get own frontier: %w", err)
+	}
+
+	// make a copy so we don't modify the stored frontier
+	currState := make(ssb.NetworkFrontier, len(selfNf))
+	for k, v := range selfNf {
+		currState[k] = v
 	}
 
 	selfRef := h.self.String()
@@ -128,15 +136,25 @@ func (h *MUXRPCHandler) sendState(ctx context.Context, tx *muxrpc.ByteSink, remo
 	return nil
 }
 
+// PushState sends the current frontier state to all active EBT sessions.
+// Called when the local want-clock changes (e.g. via Replicate()).
+func (h *MUXRPCHandler) PushState() {
+	h.Sessions.ForEach(func(sess *session) {
+		if err := h.sendState(context.TODO(), sess.tx, sess.peer); err != nil {
+			h.check(err)
+		}
+	})
+}
+
 // Loop executes the ebt logic loop, reading from the peer and sending state and messages as requests
 func (h *MUXRPCHandler) Loop(ctx context.Context, tx *muxrpc.ByteSink, rx *muxrpc.ByteSource, remoteAddr net.Addr) {
-	session := h.Sessions.Started(remoteAddr)
-
 	peer, err := ssb.GetFeedRefFromAddr(remoteAddr)
 	if err != nil {
 		h.check(err)
 		return
 	}
+
+	session := h.Sessions.Started(remoteAddr, peer, tx)
 
 	peerLogger := log.With(h.info, "r", peer.ShortSigil())
 
@@ -189,8 +207,8 @@ func (h *MUXRPCHandler) Loop(ctx context.Context, tx *muxrpc.ByteSink, rx *muxrp
 			continue
 		}
 
-		// update our network perception
-		wants, err := h.stateMatrix.Update(peer, frontierUpdate)
+		// update our network perception with the full merge
+		_, err = h.stateMatrix.Update(peer, frontierUpdate)
 		if err != nil {
 			h.check(err)
 			return
@@ -200,8 +218,10 @@ func (h *MUXRPCHandler) Loop(ctx context.Context, tx *muxrpc.ByteSink, rx *muxrp
 		// one peer might be closer to a feed
 		// for this we also need timing and other heuristics
 
-		// ad-hoc send where we have newer messages
-		for feedStr, their := range wants {
+		// only process the feeds that actually changed in this update,
+		// not the full merged frontier (which would tear down and recreate
+		// all existing subscriptions)
+		for feedStr, their := range frontierUpdate {
 			// these were already validated by the .UnmarshalJSON() method
 			// but we need the refs.Feed for the createHistArgs
 			feed, err := refs.ParseFeedRef(feedStr)
@@ -215,7 +235,7 @@ func (h *MUXRPCHandler) Loop(ctx context.Context, tx *muxrpc.ByteSink, rx *muxrp
 			}
 
 			if !their.Receive {
-				session.Unubscribe(feed)
+				session.Unsubscribe(feed)
 				continue
 			}
 
