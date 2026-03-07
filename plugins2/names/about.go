@@ -105,8 +105,8 @@ func (ab aboutStore) All() (client.NamesGetResult, error) {
 
 			kWoPrefix := bytes.TrimPrefix(k, idxKeyPrefix)
 
-			if string(kWoPrefix) == "__current_observable" {
-				return nil // skip
+			if strings.HasPrefix(string(kWoPrefix), "__") {
+				continue // skip internal keys like __seq, __current_observable
 			}
 
 			parts := strings.Split(string(kWoPrefix), ":")
