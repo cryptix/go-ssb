@@ -30,10 +30,9 @@ func (sbot *Sbot) Replicate(r refs.FeedRef) {
 	}
 
 	// convert margaret 0-indexed to SSB 1-indexed sequence
-	seq := slog.Seq()
-	if seq != -1 {
-		seq++
-	}
+	// margaret: -1=empty, 0=one msg, 1=two msgs, ...
+	// EBT:       0=want all, 1=have one,  2=have two,  ...
+	seq := slog.Seq() + 1
 
 	sbot.ebtState.Fill(sbot.KeyPair.ID(), []statematrix.ObservedFeed{
 		{Feed: r, Note: ssb.Note{Seq: seq, Receive: true, Replicate: true}},
@@ -54,10 +53,7 @@ func (sbot *Sbot) DontReplicate(r refs.FeedRef) {
 	}
 
 	// convert margaret 0-indexed to SSB 1-indexed sequence
-	seq := slog.Seq()
-	if seq != -1 {
-		seq++
-	}
+	seq := slog.Seq() + 1
 
 	sbot.ebtState.Fill(sbot.KeyPair.ID(), []statematrix.ObservedFeed{
 		{Feed: r, Note: ssb.Note{Seq: seq, Receive: false, Replicate: true}},

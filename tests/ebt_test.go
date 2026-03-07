@@ -222,7 +222,7 @@ func TestEpidemicBroadcastTrees(t *testing.T) {
 	msgs.push(mkMsg({type:"contact", "contact": testAlice, "following": true}))
 	parallel(msgs, function(err, results) {
 		t.error(err, "parallel of publish")
-		// setTimeout(ready, 15000)
+		ready()
 	})
 	pull(
 		sbot.createHistoryStream({id: testAlice, live:true}),

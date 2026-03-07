@@ -22,6 +22,7 @@ import (
 	"github.com/ssbc/go-ssb"
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/internal/statematrix"
+	"github.com/ssbc/go-ssb/internal/storedrefs"
 	"github.com/ssbc/go-ssb/message"
 	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/plugins/gossip"
@@ -192,6 +193,17 @@ func (h *MUXRPCHandler) Loop(ctx context.Context, tx *muxrpc.ByteSink, rx *muxrp
 				continue
 			}
 
+			// only accept messages for feeds we actually want
+			wanted, werr := h.stateMatrix.WantsFeed(h.self, msgWithAuthor.Author)
+			if werr != nil {
+				h.check(werr)
+				continue
+			}
+			if !wanted {
+				level.Debug(peerLogger).Log("event", "skipping unwanted feed", "author", msgWithAuthor.Author.ShortSigil())
+				continue
+			}
+
 			vsnk, err := h.verify.GetSink(msgWithAuthor.Author, true)
 			if err != nil {
 				h.check(err)
@@ -236,6 +248,21 @@ func (h *MUXRPCHandler) Loop(ctx context.Context, tx *muxrpc.ByteSink, rx *muxrp
 
 			if !their.Receive {
 				session.Unsubscribe(feed)
+				continue
+			}
+
+			// check our local sequence for this feed
+			// only create a history stream if we have messages the peer doesn't
+			userLog, err := h.userFeeds.Get(storedrefs.Feed(feed))
+			if err != nil {
+				level.Debug(peerLogger).Log("event", "no local data for feed", "feed", feed.ShortSigil())
+				continue
+			}
+			ourSeq := userLog.Seq() + 1 // margaret 0-indexed to SSB 1-indexed
+			if ourSeq <= their.Seq {
+				// peer already has everything we have - nothing to send
+				// when we later receive messages from other sources, PushState
+				// will trigger a new frontier exchange
 				continue
 			}
 
