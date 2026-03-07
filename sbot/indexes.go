@@ -119,6 +119,12 @@ func (s *Sbot) serveIndexFrom(name string, idx LogIndexer, msgs margaret.Log[*mu
 		// Process backlog
 		totalMessages := msgs.Seq()
 		var ps progressCounter
+
+		// If the index supports progress callbacks, wire it up
+		if ci, ok := idx.(interface{ SetOnEntry(func()) }); ok {
+			ci.SetOnEntry(func() { ps.Incr() })
+		}
+
 		ctx, cancel := context.WithCancel(s.rootCtx)
 		go func() {
 			p := progress.NewTicker(ctx, &ps, int64(totalMessages), 7*time.Second)
@@ -197,6 +203,12 @@ func (p *progressCounter) N() int64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return int64(p.n)
+}
+
+func (p *progressCounter) Incr() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.n++
 }
 
 func (p *progressCounter) Err() error {

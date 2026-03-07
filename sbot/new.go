@@ -145,7 +145,8 @@ type Sbot struct {
 	mlogIndicies map[string]*roaring.MultiLog
 	simpleIndex  map[string]mindexes.Index[int64]
 
-	liveIndexUpdates bool
+	liveIndexUpdates       bool
+	skipConsistencyCheck   bool
 	indexStateMu     sync.Mutex
 	indexStates      map[string]string
 
@@ -360,6 +361,21 @@ func New(fopts ...Option) (*Sbot, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sbot: failed to open combined application index: %w", err)
 	}
+
+	if !s.skipConsistencyCheck {
+		// Check that the combined index state is consistent with the user-feeds
+		// multilog. A crash between state-save and multilog flush can leave the
+		// state file ahead of reality, causing feeds to be silently skipped.
+		rewound, err := combIdx.VerifyConsistency(s.ReceiveLog)
+		if err != nil {
+			return nil, fmt.Errorf("sbot: combined index consistency check failed: %w", err)
+		}
+		if rewound {
+			level.Warn(s.info).Log("event", "combined-index-rewound",
+				"msg", "index state was ahead of multilog, rewound to force re-indexing")
+		}
+	}
+
 	s.serveIndex("combined", combIdx)
 	s.closers.AddCloser(combIdx)
 
@@ -427,47 +443,49 @@ func New(fopts ...Option) (*Sbot, error) {
 	// need to close s.indexStore _after_ the all the indexes closed and flushed
 	s.closers.AddCloser(s.indexStore)
 
-	// which feeds to replicate
-	if s.Replicator == nil {
-		s.Replicator, err = s.newGraphReplicator()
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// load our network frontier
-	ownFrontier, err := s.ebtState.Inspect(s.KeyPair.ID())
-	if err != nil {
-		return nil, err
-	}
-
-	// this peer has no ebt state yet
-	if len(ownFrontier) == 0 {
-		// use the replication lister and determine the stored feeds lenghts
-		lister := s.Replicator.Lister().ReplicationList()
-
-		feeds, err := lister.List()
-		if err != nil {
-			return nil, fmt.Errorf("ebt init state: failed to get userlist: %w", err)
-		}
-
-		for i, feed := range feeds {
-			seq, err := s.CurrentSequence(feed)
+	// which feeds to replicate (only needed when networking is enabled)
+	if !s.disableNetwork {
+		if s.Replicator == nil {
+			s.Replicator, err = s.newGraphReplicator()
 			if err != nil {
-				return nil, fmt.Errorf("failed to get sequence for entry %d: %w", i, err)
+				return nil, err
 			}
-			ownFrontier[feed.String()] = seq
 		}
 
-		// also update our own
-		ownFrontier[s.KeyPair.ID().String()], err = s.CurrentSequence(s.KeyPair.ID())
-		if err != nil {
-			return nil, fmt.Errorf("failed to get our sequence: %w", err)
-		}
-
-		_, err = s.ebtState.Update(s.KeyPair.ID(), ownFrontier)
+		// load our network frontier
+		ownFrontier, err := s.ebtState.Inspect(s.KeyPair.ID())
 		if err != nil {
 			return nil, err
+		}
+
+		// this peer has no ebt state yet
+		if len(ownFrontier) == 0 {
+			// use the replication lister and determine the stored feeds lenghts
+			lister := s.Replicator.Lister().ReplicationList()
+
+			feeds, err := lister.List()
+			if err != nil {
+				return nil, fmt.Errorf("ebt init state: failed to get userlist: %w", err)
+			}
+
+			for i, feed := range feeds {
+				seq, err := s.CurrentSequence(feed)
+				if err != nil {
+					return nil, fmt.Errorf("failed to get sequence for entry %d: %w", i, err)
+				}
+				ownFrontier[feed.String()] = seq
+			}
+
+			// also update our own
+			ownFrontier[s.KeyPair.ID().String()], err = s.CurrentSequence(s.KeyPair.ID())
+			if err != nil {
+				return nil, fmt.Errorf("failed to get our sequence: %w", err)
+			}
+
+			_, err = s.ebtState.Update(s.KeyPair.ID(), ownFrontier)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -871,25 +889,27 @@ func (s *Sbot) Close() error {
 	if s.Network != nil {
 		if err := s.Network.Close(); err != nil {
 			s.closeErr = fmt.Errorf("sbot: failed to close own network node: %w", err)
-			return s.closeErr
 		}
 		s.Network.GetConnTracker().CloseAll()
 		level.Debug(closeEvt).Log("msg", "connections closed")
 	}
 
 	if err := s.idxDone.Wait(); err != nil {
-		s.closeErr = fmt.Errorf("sbot: index group shutdown failed: %w", err)
-		return s.closeErr
+		if s.closeErr == nil {
+			s.closeErr = fmt.Errorf("sbot: index group shutdown failed: %w", err)
+		}
+		level.Warn(closeEvt).Log("msg", "index group had errors", "err", err)
 	}
 	level.Debug(closeEvt).Log("msg", "waited for indexes to close")
 
 	if err := s.closers.Close(); err != nil {
-		s.closeErr = err
-		return s.closeErr
+		if s.closeErr == nil {
+			s.closeErr = err
+		}
 	}
 
 	level.Info(closeEvt).Log("msg", "closers closed")
-	return nil
+	return s.closeErr
 }
 
 type selfChecker struct {

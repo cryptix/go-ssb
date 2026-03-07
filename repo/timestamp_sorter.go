@@ -276,12 +276,14 @@ func (sr *SequenceResolver) Append(seq int64, feed int64, claimed, received time
 	if has := int64(len(sr.seq2claimed)); has != seq {
 		if seq < has {
 			// assuming reindex - value wouldnt change
-			// TODO: maybe received? but not really...
-			// could be  a side-channel for _new messages_
-			// but it's a dirty hack - rather use _readable index_ message count
 			return nil
 		}
-		return fmt.Errorf("seq resolver: would break const (has:%d, will: %d)", has, seq)
+		// fill gaps (from nulled/deleted entries the iterator skips) with zeros
+		for i := has; i < seq; i++ {
+			sr.seq2claimed = append(sr.seq2claimed, 0)
+			sr.seq2received = append(sr.seq2received, 0)
+			sr.seq2feedseq = append(sr.seq2feedseq, 0)
+		}
 	}
 
 	sr.seq2claimed = append(sr.seq2claimed, claimed.Unix())

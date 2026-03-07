@@ -50,6 +50,16 @@ func DisableLiveIndexMode() Option {
 	}
 }
 
+// SkipConsistencyCheck disables the automatic index consistency check and repair
+// during startup. Use this when running fsck so it can report problems instead
+// of the startup silently fixing them.
+func SkipConsistencyCheck() Option {
+	return func(s *Sbot) error {
+		s.skipConsistencyCheck = true
+		return nil
+	}
+}
+
 // WithRepoPath changes where the replication database and blobs are stored.
 func WithRepoPath(path string) Option {
 	return func(s *Sbot) error {

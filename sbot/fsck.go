@@ -8,11 +8,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/RoaringBitmap/roaring"
 	"github.com/machinebox/progress"
+	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb-refs/tfk"
 	margaret "github.com/ssbc/margaret/v2"
 	mroaring "github.com/ssbc/margaret/v2/multilog/roaring"
@@ -20,6 +22,7 @@ import (
 	"go.mindeco.de/log/level"
 
 	"github.com/ssbc/go-ssb"
+	"github.com/ssbc/go-ssb/internal/storedrefs"
 	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/multilogs"
 )
@@ -132,6 +135,10 @@ func (s *Sbot) FSCK(opts ...FSCKOption) error {
 		return lengthFSCK(opt.feedsIdx, s.ReceiveLog)
 
 	case FSCKModeSequences:
+		// sequences mode also runs the length check to catch index corruption
+		if err := lengthFSCK(opt.feedsIdx, s.ReceiveLog); err != nil {
+			return err
+		}
 		return sequenceFSCK(s.ReceiveLog, opt.progressFn)
 
 	default:
@@ -139,12 +146,14 @@ func (s *Sbot) FSCK(opts ...FSCKOption) error {
 	}
 }
 
-// lengthFSCK just checks the length of each stored feed.
+// lengthFSCK checks the length of each stored feed and collects ALL broken feeds.
 func lengthFSCK(authorMlog *mroaring.MultiLog, receiveLog margaret.Log[*multimsg.MultiMessage]) error {
 	feeds, err := authorMlog.List()
 	if err != nil {
 		return fmt.Errorf("fsck/length: author listing failed: %w", err)
 	}
+
+	var problems []ssb.ErrWrongSequence
 
 	for _, author := range feeds {
 		var sr tfk.Feed
@@ -192,15 +201,37 @@ func lengthFSCK(authorMlog *mroaring.MultiLog, receiveLog margaret.Log[*multimsg
 			if err != nil {
 				return fmt.Errorf("fsck/length: failed to feed reference for author (%q): %w", author, err)
 			}
-			return ssb.ErrWrongSequence{
+			problems = append(problems, ssb.ErrWrongSequence{
 				Ref:     fr,
 				Stored:  currentSeqFromIndex,
 				Logical: msg.Seq(),
-			}
+			})
 		}
 	}
 
-	return nil
+	if len(problems) == 0 {
+		return nil
+	}
+
+	// Build a bitmap of all rxlog sequences belonging to broken feeds
+	// so the repair path can null them.
+	nullMap := roaring.New()
+	for _, p := range problems {
+		feedAddr := storedrefs.Feed(p.Ref)
+		subLog, err := authorMlog.Get(feedAddr)
+		if err != nil {
+			continue
+		}
+		qry := subLog.Query()
+		for _, entry := range qry.Iter() {
+			nullMap.Add(uint32(int64(*entry)))
+		}
+	}
+
+	return ErrConsistencyProblems{
+		Errors:    problems,
+		Sequences: nullMap,
+	}
 }
 
 // implements machinebox/progress.Counter
@@ -253,11 +284,14 @@ func sequenceFSCK(receiveLog margaret.Log[*multimsg.MultiMessage], progressFn FS
 	}()
 	defer cancel()
 
+	var nulled, checked int64
 	for rxLogSeq, mm := range qry.Iter() {
 		if mm.Message == nil {
+			nulled++
 			pc.Incr()
 			continue
 		}
+		checked++
 		msg := mm.Message
 
 		msgSeq := msg.Seq()
@@ -315,6 +349,10 @@ func sequenceFSCK(receiveLog margaret.Log[*multimsg.MultiMessage], progressFn FS
 		return fmt.Errorf("fsck/seq: query error: %w", err)
 	}
 
+	skipped := int64(totalMessages) + 1 - checked - nulled // entries the iterator didn't return (storage-level nulled)
+	fmt.Printf("fsck/sequences: checked %d messages across %d feeds (rxlog has %d entries, %d nulled at storage level)\n",
+		checked, len(lastSequence), totalMessages+1, skipped)
+
 	if len(consistencyErrors) == 0 {
 		return nil
 	}
@@ -333,7 +371,15 @@ func sequenceFSCK(receiveLog margaret.Log[*multimsg.MultiMessage], progressFn FS
 	}
 }
 
-// HealRepo just nulls the messages and is a very naive repair but the only one that is feasably implemented right now
+// rxEntry holds an entry found in the rxlog for a specific feed during repair scanning.
+type rxEntry struct {
+	rxSeq  int64 // position in the global receive log
+	msgSeq int64 // SSB message sequence number
+}
+
+// HealRepo repairs all broken feeds by scanning the ENTIRE rxlog to find
+// ALL entries (including orphaned ones not referenced by any sublog), then
+// truncating each feed to its last valid message chain and nulling everything else.
 func (s *Sbot) HealRepo(report ErrConsistencyProblems) error {
 	funcLog := kitlog.With(s.info, "event", "heal repo")
 	brokenCount := len(report.Errors)
@@ -342,28 +388,128 @@ func (s *Sbot) HealRepo(report ErrConsistencyProblems) error {
 		return nil
 	}
 
-	level.Info(funcLog).Log("msg", "trying to null all broken feeds",
+	level.Info(funcLog).Log("msg", "repairing broken feeds",
 		"feeds", brokenCount,
-		"messages", report.Sequences.GetCardinality(),
 	)
 
-	it := report.Sequences.Iterator()
-	for it.HasNext() {
-		seq := it.Next()
-		err := s.ReceiveLog.Null(int64(seq))
+	// Build a set of broken feed author strings for fast lookup.
+	brokenFeeds := make(map[string]refs.FeedRef, brokenCount)
+	for _, e := range report.Errors {
+		brokenFeeds[e.Ref.String()] = e.Ref
+	}
+
+	// Step 1: Scan the ENTIRE rxlog to find ALL entries belonging to broken feeds.
+	// This catches orphaned entries that aren't referenced by any sublog.
+	entriesPerFeed := make(map[string][]rxEntry)
+
+	qry := s.ReceiveLog.Query()
+	for rxLogSeq, mm := range qry.Iter() {
+		if mm.Message == nil {
+			continue // nulled entry
+		}
+		authorStr := mm.Message.Author().String()
+		if _, broken := brokenFeeds[authorStr]; !broken {
+			continue // not a broken feed, skip
+		}
+		entriesPerFeed[authorStr] = append(entriesPerFeed[authorStr], rxEntry{
+			rxSeq:  rxLogSeq,
+			msgSeq: int64(mm.Message.Seq()),
+		})
+	}
+	if err := qry.Err(); err != nil {
+		return fmt.Errorf("heal: rxlog scan error: %w", err)
+	}
+
+	// Step 2: For each broken feed, find the valid chain and null everything else.
+	for authorStr, ref := range brokenFeeds {
+		entries := entriesPerFeed[authorStr]
+		err := s.repairFeedEntries(ref, entries, funcLog)
 		if err != nil {
-			return fmt.Errorf("failed to null message (%d) in receive log: %w", seq, err)
+			return fmt.Errorf("heal: failed to repair feed %s: %w", ref.ShortSigil(), err)
 		}
 	}
 
-	// now remove feed metadata from the indexes
-	for i, constErr := range report.Errors {
-		err := s.NullFeed(constErr.Ref)
-		if err != nil {
-			return fmt.Errorf("heal(%d): failed to null broken feed: %w", i, err)
+	return nil
+}
+
+// repairFeedEntries repairs a broken feed given ALL its rxlog entries (found by
+// scanning the entire rxlog). It finds the longest valid chain starting from
+// sequence 1, nulls all other entries (including orphaned duplicates), and
+// rebuilds the sublog with only the valid portion.
+//
+// entries must be in rxlog order (ascending), which is guaranteed because
+// HealRepo scans the rxlog linearly.
+func (s *Sbot) repairFeedEntries(ref refs.FeedRef, entries []rxEntry, log kitlog.Logger) error {
+	feedAddr := storedrefs.Feed(ref)
+
+	// Find the valid chain: seq 1, 2, 3, ... taking the FIRST occurrence of each.
+	// Since entries are in rxlog order, the first occurrence of each sequence number
+	// is the original entry; later occurrences are duplicates/orphans.
+	var validRxSeqs []int64
+	nextExpectedSeq := int64(1)
+	for _, e := range entries {
+		if e.msgSeq == nextExpectedSeq {
+			validRxSeqs = append(validRxSeqs, e.rxSeq)
+			nextExpectedSeq++
 		}
-		level.Debug(funcLog).Log("feed", constErr.Ref.String())
 	}
+
+	// Null all entries that are NOT in the valid chain.
+	validSet := make(map[int64]bool, len(validRxSeqs))
+	for _, rxSeq := range validRxSeqs {
+		validSet[rxSeq] = true
+	}
+	nulled := 0
+	for _, e := range entries {
+		if !validSet[e.rxSeq] {
+			if err := s.ReceiveLog.Null(e.rxSeq); err != nil {
+				level.Warn(log).Log("event", "null-failed", "rxSeq", e.rxSeq, "err", err)
+			} else {
+				nulled++
+			}
+		}
+	}
+
+	// Delete the old sublog.
+	if err := s.Users.Delete(feedAddr); err != nil {
+		return fmt.Errorf("failed to delete sublog: %w", err)
+	}
+
+	// Recreate the sublog with only valid entries.
+	if len(validRxSeqs) > 0 {
+		newSubLog, err := s.Users.Get(feedAddr)
+		if err != nil {
+			return fmt.Errorf("failed to recreate sublog: %w", err)
+		}
+		for _, rxSeq := range validRxSeqs {
+			seq := mroaring.Seq(rxSeq)
+			if _, err := newSubLog.Append(&seq); err != nil {
+				return fmt.Errorf("failed to re-add valid entry: %w", err)
+			}
+		}
+	}
+
+	// Clean up other indexes for this feed.
+	if err := s.GraphBuilder.DeleteAuthor(ref); err != nil {
+		level.Warn(log).Log("event", "graph-delete-failed", "err", err)
+	}
+
+	// Remove EBT state for this feed.
+	sfn, err := s.ebtState.StateFileName(s.KeyPair.ID())
+	if err == nil {
+		os.Remove(sfn)
+	}
+
+	if !s.disableNetwork {
+		s.verifyRouter.CloseSink(ref)
+	}
+
+	level.Info(log).Log("event", "feed-repaired",
+		"feed", ref.ShortSigil(),
+		"valid", len(validRxSeqs),
+		"nulled", nulled,
+		"total-entries", len(entries),
+	)
 
 	return nil
 }

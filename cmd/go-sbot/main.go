@@ -376,6 +376,10 @@ func runSbot() error {
 		opts = append(opts, mksbot.WithHMACSigning(hcbytes))
 	}
 
+	if flagFSCK != "" {
+		opts = append(opts, mksbot.DisableNetworkNode(), mksbot.SkipConsistencyCheck())
+	}
+
 	sbot, err := mksbot.New(opts...)
 	if err != nil {
 		return fmt.Errorf("failed to instantiate ssb server: %w", err)
@@ -428,39 +432,49 @@ func runSbot() error {
 			return fmt.Errorf("fsck returned: %w", err)
 		}
 
-		switch report := err.(type) {
-		case ssb.ErrWrongSequence:
-
-			err = sbot.NullFeed(report.Ref)
-			if err != nil {
-				return fmt.Errorf("fsck: failed to drop broken feed: %w", err)
-			}
-
-			sbot.Shutdown()
-			err := sbot.Close()
-			if err != nil {
-				return fmt.Errorf("fsck: failed to stop sbot after repair action: %w", err)
-			}
-
-		case mksbot.ErrConsistencyProblems:
-			err = sbot.HealRepo(report)
-			if err != nil {
-				level.Error(log).Log("fsck", "heal failed", "err", err)
-			} else {
-				level.Info(log).Log("fsck", "healed",
-					"msgs", report.Sequences.GetCardinality(),
-					"feeds", len(report.Errors))
-			}
-			sbot.Shutdown()
-			err := sbot.Close()
-			if err != nil {
-				return fmt.Errorf("fsck: failed to halt sbot after repo heal: %w", err)
-			}
-		default:
-			level.Error(log).Log("fsck", "wrong report type", "T", fmt.Sprintf("%T", err))
-
+		report, ok := err.(mksbot.ErrConsistencyProblems)
+		if !ok {
+			return fmt.Errorf("fsck returned unexpected error type %T: %w", err, err)
 		}
 
+		// Log all broken feeds
+		for _, e := range report.Errors {
+			level.Warn(log).Log("fsck", "broken-feed",
+				"feed", e.Ref.ShortSigil(),
+				"stored-seq", e.Stored,
+				"logical-seq", e.Logical)
+		}
+
+		// Repair all broken feeds (truncate to last valid message)
+		err = sbot.HealRepo(report)
+		if err != nil {
+			return fmt.Errorf("fsck: repair failed: %w", err)
+		}
+
+		// Verify the repair was successful by re-running fsck
+		level.Info(log).Log("fsck", "verifying repair")
+		verifyErr := sbot.FSCK(mksbot.FSCKWithFeedIndex(uf), mksbot.FSCKWithMode(fsckMode))
+		if verifyErr != nil {
+			level.Error(log).Log("fsck", "repair-incomplete",
+				"err", verifyErr,
+				"msg", "repair did not produce a clean state")
+			sbot.Shutdown()
+			err := sbot.Close()
+			if err != nil {
+				return fmt.Errorf("fsck: failed to stop sbot: %w", err)
+			}
+			return fmt.Errorf("fsck: repair did not produce a clean state: %w", verifyErr)
+		}
+
+		level.Info(log).Log("fsck", "repair-complete",
+			"feeds-repaired", len(report.Errors),
+			"msg", "verification passed")
+
+		sbot.Shutdown()
+		err = sbot.Close()
+		if err != nil {
+			return fmt.Errorf("fsck: failed to stop sbot after repair: %w", err)
+		}
 		return nil
 	}
 	if exitAfterFSCK {

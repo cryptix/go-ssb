@@ -96,6 +96,15 @@ type CombinedIndex struct {
 
 	file *os.File
 	l    *sync.Mutex
+
+	// onEntry is called for each processed entry during Index(), if set.
+	// Used by serveIndex to report progress.
+	onEntry func()
+}
+
+// SetOnEntry sets a callback that is invoked for each entry processed by Index().
+func (idx *CombinedIndex) SetOnEntry(fn func()) {
+	idx.onEntry = fn
 }
 
 // appendSeq creates a *roaring.Seq from an int64 and appends it to the log.
@@ -177,17 +186,32 @@ func (idx *CombinedIndex) ProcessEntry(seq int64, mm *multimsg.MultiMessage) err
 	idx.l.Lock()
 	defer idx.l.Unlock()
 
-	// persist the current sequence number
-	err := persist.Save(idx.file, seq)
+	if mm.Message == nil {
+		// persist the current sequence number even for nulled entries
+		err := persist.Save(idx.file, seq)
+		if err != nil {
+			return fmt.Errorf("error saving current sequence number: %w", err)
+		}
+		return nil // nulled entry
+	}
+
+	err := idx.update(seq, mm)
+	if err != nil {
+		return err
+	}
+
+	// persist the current sequence number AFTER updating all sublogs.
+	// Previously this was done BEFORE update(), which meant a crash between
+	// persist.Save and update() would skip re-processing on restart,
+	// leaving the user-feeds multilog stale. This caused the verification
+	// router to create sinks with latestSeq=0 for feeds that already had
+	// messages, allowing duplicate storage.
+	err = persist.Save(idx.file, seq)
 	if err != nil {
 		return fmt.Errorf("error saving current sequence number: %w", err)
 	}
 
-	if mm.Message == nil {
-		return nil // nulled entry
-	}
-
-	return idx.update(seq, mm)
+	return nil
 }
 
 // LastProcessedSeq returns the sequence number of the last processed message.
@@ -214,13 +238,142 @@ func (idx *CombinedIndex) Index(log margaret.Log[*multimsg.MultiMessage]) error 
 		opts = append(opts, margaret.Gt(lastSeq))
 	}
 
+	var count int
 	qry := log.Query(opts...)
 	for seq, mm := range qry.Iter() {
 		if err := idx.ProcessEntry(seq, mm); err != nil {
 			return err
 		}
+		if idx.onEntry != nil {
+			idx.onEntry()
+		}
+		count++
+		// Periodically flush the user-feeds multilog to disk during bulk
+		// re-indexing. Without this, a crash during a large re-index could
+		// lose all the in-memory bitmap updates (roaring only flushes every
+		// 13s via its background goroutine).
+		if count%1000 == 0 {
+			if err := idx.users.Flush(); err != nil {
+				return fmt.Errorf("error flushing user feeds during index: %w", err)
+			}
+		}
+	}
+	// Final flush after processing all entries
+	if count > 0 {
+		if err := idx.users.Flush(); err != nil {
+			return fmt.Errorf("error flushing user feeds after index: %w", err)
+		}
 	}
 	return qry.Err()
+}
+
+// VerifyConsistency checks that the CombinedIndex's last-processed-seq is
+// consistent with what's actually in the user-feeds multilog. If the state
+// file is ahead of the multilog (e.g., due to a crash between state save
+// and multilog flush), it rewinds the state to force a full re-index.
+//
+// The check works by comparing each feed's sublog length (number of indexed
+// entries) with the message sequence of its latest entry. If a feed's sublog
+// has 86 entries but the latest message has seq=97, then 11 entries were lost.
+//
+// Call this ONCE after opening but before the first Index() call.
+func (idx *CombinedIndex) VerifyConsistency(rxlog margaret.Log[*multimsg.MultiMessage]) (rewound bool, err error) {
+	idx.l.Lock()
+	defer idx.l.Unlock()
+
+	lastSeq := int64(margaret.SeqEmpty)
+	if loadErr := persist.Load(idx.file, &lastSeq); loadErr != nil {
+		return false, nil // no state file yet, nothing to verify
+	}
+	if lastSeq < 0 {
+		return false, nil // empty, nothing to verify
+	}
+
+	// List all known feeds and check each one
+	feeds, err := idx.users.List()
+	if err != nil {
+		return false, fmt.Errorf("consistency: failed to list feeds: %w", err)
+	}
+
+	var broken int
+	for _, feedAddr := range feeds {
+		userLog, err := idx.users.Get(feedAddr)
+		if err != nil {
+			continue
+		}
+
+		sublogLen := userLog.Seq() // 0-indexed: -1=empty, 0=one entry, etc.
+		if sublogLen < 0 {
+			continue
+		}
+
+		// Get the last entry in the sublog → resolve to the actual message
+		rxSeqVal, err := userLog.Get(sublogLen)
+		if err != nil {
+			continue
+		}
+		mm, err := rxlog.Get(int64(*rxSeqVal))
+		if err != nil {
+			continue
+		}
+		if mm.Message == nil {
+			continue // nulled
+		}
+
+		// The sublog should have exactly msg.Seq() entries (one per message).
+		// margaret is 0-indexed, so sublogLen+1 should equal msg.Seq().
+		msgSeq := mm.Message.Seq()
+		if sublogLen+1 != msgSeq {
+			broken++
+		}
+	}
+
+	if broken == 0 {
+		return false, nil
+	}
+
+	// Clear ALL sublogs before re-indexing to prevent duplicate entries.
+	// Since we're rewinding the CombinedIndex state to -1, ALL rxlog entries
+	// will be reprocessed. Without clearing, the reprocessing would append
+	// to existing sublogs, creating duplicates that cause further corruption.
+	for _, addr := range feeds {
+		idx.users.Delete(addr)
+	}
+
+	// Also clear byType, tangles, and orderedHelper sublogs since they'll
+	// also be rebuilt during re-indexing.
+	if addrs, err := idx.byType.List(); err == nil {
+		for _, addr := range addrs {
+			idx.byType.Delete(addr)
+		}
+	}
+	if addrs, err := idx.tangles.List(); err == nil {
+		for _, addr := range addrs {
+			idx.tangles.Delete(addr)
+		}
+	}
+	if addrs, err := idx.orderdHelper.List(); err == nil {
+		for _, addr := range addrs {
+			idx.orderdHelper.Delete(addr)
+		}
+	}
+	if addrs, err := idx.private.List(); err == nil {
+		for _, addr := range addrs {
+			idx.private.Delete(addr)
+		}
+	}
+
+	// Reset the state to force a full re-index from the beginning.
+	// A partial rewind isn't safe because we don't know how far back
+	// the corruption extends.
+	rewindTo := int64(-1)
+	if err := persist.Save(idx.file, rewindTo); err != nil {
+		return false, fmt.Errorf("consistency: failed to rewind state: %w", err)
+	}
+	fmt.Printf("combined-index: consistency check found %d/%d feeds with missing index entries, forcing full re-index (was at seq %d)\n",
+		broken, len(feeds), lastSeq)
+
+	return true, nil
 }
 
 // update all the indexes with this new message which was stored as rxSeq
@@ -234,6 +387,7 @@ func (idx *CombinedIndex) update(rxSeq int64, mm *multimsg.MultiMessage) error {
 	if err != nil {
 		return fmt.Errorf("error opening sublog: %w", err)
 	}
+
 	if err := appendSeq(authorLog, rxSeq); err != nil {
 		return fmt.Errorf("error updating author sublog: %w", err)
 	}

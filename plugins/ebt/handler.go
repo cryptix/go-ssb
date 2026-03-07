@@ -259,6 +259,7 @@ func (h *MUXRPCHandler) Loop(ctx context.Context, tx *muxrpc.ByteSink, rx *muxrp
 				continue
 			}
 			ourSeq := userLog.Seq() + 1 // margaret 0-indexed to SSB 1-indexed
+			level.Debug(peerLogger).Log("event", "note-rx", "feed", feed.ShortSigil(), "their-seq", their.Seq, "our-seq", ourSeq, "receive", their.Receive)
 			if ourSeq < their.Seq {
 				// peer has more than us - they are the source, not us.
 				// skip sending; when we later receive messages, PushState
@@ -283,9 +284,11 @@ func (h *MUXRPCHandler) Loop(ctx context.Context, tx *muxrpc.ByteSink, rx *muxrp
 			err = h.livefeeds.CreateStreamHistory(feedCtx, tx, arg)
 			if err != nil {
 				cancel()
+				level.Debug(peerLogger).Log("event", "CreateStreamHistory failed", "feed", feed.ShortSigil(), "err", err)
 				h.check(err)
 				return
 			}
+			level.Debug(peerLogger).Log("event", "live-stream-created", "feed", feed.ShortSigil(), "from-seq", arg.Seq)
 			session.Subscribed(feed, cancel)
 		}
 	}
