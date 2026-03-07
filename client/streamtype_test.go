@@ -6,13 +6,12 @@ package client_test
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/ssbc/go-muxrpc/v3"
 	margaret "github.com/ssbc/margaret/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -86,19 +85,15 @@ func TestReadStreamAsInterfaceMessage(t *testing.T) {
 		r.NoError(err)
 
 		ctx := context.TODO()
-		r.True(src.Next(ctx))
+		count := 0
 		var streamMsg refs.KeyValueRaw
-		err = src.Reader(func(r io.Reader) error {
-			return json.NewDecoder(r).Decode(&streamMsg)
-		})
-		r.NoError(err)
+		for streamMsg = range muxrpc.SourceAs[refs.KeyValueRaw](ctx, src) {
+			count++
+		}
+		r.Equal(1, count, "expected exactly 1 message")
 
 		a.Equal(newMsg.Author().String(), streamMsg.Author().String())
-
 		a.EqualValues(newMsg.Seq(), streamMsg.Seq())
-
-		r.False(src.Next(ctx))
-		r.NoError(src.Err())
 	}
 
 	opts := message.CreateLogArgs{}
@@ -109,23 +104,12 @@ func TestReadStreamAsInterfaceMessage(t *testing.T) {
 	r.NoError(err)
 
 	ctx := context.TODO()
-	for i := 0; i < 10; i++ {
-
-		if !src.Next(ctx) {
-			break
-		}
-
-		var msg refs.KeyValueRaw
-		err = src.Reader(func(r io.Reader) error {
-			return json.NewDecoder(r).Decode(&msg)
-		})
-		r.NoError(err)
-
+	i := 0
+	for msg := range muxrpc.SourceAs[refs.KeyValueRaw](ctx, src) {
 		a.Equal(wantRefs[i], msg.Key().String())
+		i++
 	}
-
-	r.False(src.Next(ctx))
-	r.NoError(src.Err())
+	r.Equal(10, i, "expected 10 messages")
 
 	a.NoError(c.Close())
 

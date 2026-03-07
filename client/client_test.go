@@ -6,10 +6,9 @@ package client_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"iter"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -81,18 +80,10 @@ func TestUnixSock(t *testing.T) {
 
 	ctx := context.TODO()
 	i := 0
-	for src.Next(ctx) {
-
-		var msg refs.KeyValueRaw
-		err = src.Reader(func(r io.Reader) error {
-			return json.NewDecoder(r).Decode(&msg)
-		})
-		r.NoError(err)
-
+	for msg := range muxrpc.SourceAs[refs.KeyValueRaw](ctx, src) {
 		r.True(msg.Key().Equal(msgs[i]), "wrong message %d", i)
 		i++
 	}
-	r.NoError(src.Err())
 	r.Equal(msgCount, i, "did not get all messages")
 
 	a.NoError(c.Close())
@@ -319,6 +310,9 @@ func LotsOfStatusCalls(newPair mkPair) func(t *testing.T) {
 		src, err := c.CreateLogStream(lopt)
 		r.NoError(err)
 
+		next, stop := iter.Pull(muxrpc.SourceAs[refs.KeyValueRaw](ctx, src))
+		defer stop()
+
 		for i := n; i > 0; i-- {
 			time.Sleep(500 * time.Millisecond)
 			ref, err := c.Publish(struct {
@@ -328,12 +322,8 @@ func LotsOfStatusCalls(newPair mkPair) func(t *testing.T) {
 			r.NoError(err, "publish %d errored", i)
 			r.NotNil(ref)
 
-			r.True(src.Next(ctx))
-			var msg refs.KeyValueRaw
-			err = src.Reader(func(r io.Reader) error {
-				return json.NewDecoder(r).Decode(&msg)
-			})
-			r.NoError(err, "message live err %d errored", i)
+			msg, ok := next()
+			r.True(ok, "expected to get live message %d", i)
 
 			a.True(msg.Key().Equal(ref), "wrong message: %d - %s", i, ref.String())
 		}
@@ -413,17 +403,17 @@ func TestPublish(t *testing.T) {
 	src, err := c.CreateLogStream(opts)
 	r.NoError(err)
 
-	r.True(src.Next(context.TODO()))
-	var streamMsg refs.KeyValueRaw
-	err = src.Reader(func(r io.Reader) error {
-		return json.NewDecoder(r).Decode(&streamMsg)
-	})
-	r.NoError(err)
+	next, stop := iter.Pull(muxrpc.SourceAs[refs.KeyValueRaw](context.TODO(), src))
+	defer stop()
+
+	streamMsg, ok := next()
+	r.True(ok, "expected to get a message")
 
 	a.Equal(newMsg.Author().String(), streamMsg.Author().String())
 	a.EqualValues(newMsg.Seq(), streamMsg.Seq())
 
-	r.False(src.Next(context.TODO()))
+	_, ok = next()
+	r.False(ok, "expected no more messages")
 
 	a.NoError(c.Close())
 
@@ -495,24 +485,23 @@ func TestTanglesThread(t *testing.T) {
 	r.NoError(err)
 
 	ctx := context.TODO()
-	r.True(src.Next(ctx), "did not get the 1st message: %v", src.Err())
-	var streamMsg refs.KeyValueRaw
-	err = src.Reader(decodeMuxMsg(&streamMsg))
-	r.NoError(err, "did not decode message 1: %v", src.Err())
+	next, stop := iter.Pull(muxrpc.SourceAs[refs.KeyValueRaw](ctx, src))
+	defer stop()
+
+	streamMsg, ok := next()
+	r.True(ok, "did not get the 1st message")
 	a.EqualValues(1, streamMsg.Seq(), "got message %s", string(streamMsg.ContentBytes()))
 
-	r.True(src.Next(ctx), "did not get the 2nd message: %v", src.Err())
-	err = src.Reader(decodeMuxMsg(&streamMsg))
-	r.NoError(err, "did not decode message 2: %v", src.Err())
+	streamMsg, ok = next()
+	r.True(ok, "did not get the 2nd message")
 	a.EqualValues(2, streamMsg.Seq(), "got message %s", string(streamMsg.ContentBytes()))
 
-	r.True(src.Next(ctx), "did not get the 3rd message: %v", src.Err())
-	err = src.Reader(decodeMuxMsg(&streamMsg))
-	r.NoError(err, "did not decode message 3: %v", src.Err())
+	streamMsg, ok = next()
+	r.True(ok, "did not get the 3rd message")
 	a.EqualValues(3, streamMsg.Seq(), "got message %s", string(streamMsg.ContentBytes()))
 
-	r.False(src.Next(ctx))
-	r.NoError(src.Err())
+	_, ok = next()
+	r.False(ok)
 
 	a.NoError(c.Close())
 
@@ -605,8 +594,3 @@ func TestFriendsBlocks(t *testing.T) {
 	r.NotNil(src)
 }
 
-func decodeMuxMsg(msg interface{}) func(r io.Reader) error {
-	return func(r io.Reader) error {
-		return json.NewDecoder(r).Decode(msg)
-	}
-}

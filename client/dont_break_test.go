@@ -7,9 +7,8 @@ package client_test
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
+	"iter"
 	"os"
 	"path/filepath"
 	"testing"
@@ -90,9 +89,13 @@ func TestAskForSomethingWeird(t *testing.T) {
 	r.NoError(err)
 	r.NotNil(src)
 
+	next, stop := iter.Pull(muxrpc.SourceAs[refs.KeyValueRaw](ctx, src))
+	defer stop()
+
 	i := 0
 	for {
-		if !src.Next(ctx) {
+		msg, ok := next()
+		if !ok {
 			t.Log("hist stream ended", i)
 			break
 		}
@@ -105,26 +108,21 @@ func TestAskForSomethingWeird(t *testing.T) {
 			o.Keys = true
 
 			// starting the call works (although our lib could check that the ref is wrong, too)
-			src, err := c.CreateHistoryStream(o)
+			badSrc, err := c.CreateHistoryStream(o)
 			a.NoError(err)
-			a.NotNil(src)
-			a.False(src.Next(ctx))
-			ce := src.Err()
+			a.NotNil(badSrc)
+			for range badSrc.Iter(ctx) {
+				// should not iterate
+			}
+			ce := badSrc.Err()
 			callErr, ok := ce.(*muxrpc.CallError)
 			r.True(ok, "not a call err: %T", ce)
 			t.Log(callErr)
 		}
 
-		var msg refs.KeyValueRaw
-		err = src.Reader(func(r io.Reader) error {
-			return json.NewDecoder(r).Decode(&msg)
-		})
-		r.NoError(err)
-
 		r.True(msg.Key().Equal(msgs[i]), "wrong message %d", i)
 		i++
 	}
-	r.NoError(src.Err())
 	r.Equal(msgCount, i, "did not get all messages")
 
 	a.NoError(c.Close())

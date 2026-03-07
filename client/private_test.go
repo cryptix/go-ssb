@@ -95,24 +95,16 @@ func TestAutomaticUnboxing(t *testing.T) {
 
 func testElementsInSource(t *testing.T, src *muxrpc.ByteSource, cnt int) {
 	ctx := context.Background()
-	r, a := require.New(t), assert.New(t)
+	a := assert.New(t)
 
 	i := 0
-
-	for src.Next(ctx) {
-
-		body, err := src.Bytes()
-		r.NoError(err)
+	for body := range src.Iter(ctx) {
 		t.Log(string(body))
-		_ = body
-
 		i++
 		if i > cnt {
-			t.Error("testElementsInSource: way to many results")
+			t.Error("testElementsInSource: way too many results")
 		}
 	}
 
-	err := src.Err()
-	r.NoError(err, "failed to get all elements from source (public)")
 	a.Equal(cnt, i)
 }

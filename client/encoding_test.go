@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -86,48 +85,26 @@ func TestEncodeHistStreamAsJSON(t *testing.T) {
 	r.NoError(err)
 
 	ctx := context.TODO()
-	for i := 0; i < 10; i++ {
-		// ctx, _ := context.WithTimeout(ctx, 5*time.Second)
-		ok := src.Next(ctx)
-		r.True(ok, "expected more results")
-
-		var v map[string]interface{}
-		err = src.Reader(func(r io.Reader) error {
-			return json.NewDecoder(r).Decode(&v)
-		})
-
-		r.NoError(err, "failed JSON unmarshal message:%d", i)
-		// a.Equal(wantRefs[i], msg.Key().Ref())
+	i := 0
+	for range muxrpc.SourceAs[map[string]interface{}](ctx, src) {
+		i++
 	}
-
-	ok := src.Next(ctx)
-	a.False(ok, "expected no more results")
-	r.NoError(src.Err())
+	a.Equal(10, i, "expected 10 results")
 
 	// now with key-value wrapping
 	args.Keys = true
 	src, err = c.CreateHistoryStream(args)
 	r.NoError(err)
 
-	for i := 0; i < 10; i++ {
-		// ctx, _ := context.WithTimeout(ctx, 5*time.Second)
-		ok := src.Next(ctx)
-		r.True(ok, "expected more results")
-
-		var msg refs.KeyValueRaw
-		err = src.Reader(func(r io.Reader) error {
-			return json.NewDecoder(r).Decode(&msg)
-		})
-
+	i = 0
+	for msg := range muxrpc.SourceAs[refs.KeyValueRaw](ctx, src) {
 		var v testMsg
 		err = json.Unmarshal(msg.Value.Content, &v)
 		r.NoError(err, "failed JSON unmarshal message:%d", i)
 		a.Equal(wantRefs[i], msg.Key().String())
+		i++
 	}
-
-	ok = src.Next(ctx)
-	a.False(ok, "expected no more results")
-	r.NoError(src.Err())
+	a.Equal(10, i, "expected 10 results")
 
 	a.NoError(c.Close())
 

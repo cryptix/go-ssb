@@ -6,13 +6,12 @@ package client_test
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/ssbc/go-muxrpc/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -97,17 +96,7 @@ func TestReplicateUpTo(t *testing.T) {
 
 		ctx := context.TODO()
 		var i int
-		for i = 0; true; i++ {
-			if !src.Next(ctx) {
-				break
-			}
-
-			var upToResp ssb.ReplicateUpToResponse
-			err = src.Reader(func(r io.Reader) error {
-				return json.NewDecoder(r).Decode(&upToResp)
-			})
-			r.NoError(err)
-
+		for upToResp := range muxrpc.SourceAs[ssb.ReplicateUpToResponse](ctx, src) {
 			ref := upToResp.ID.String()
 			// either it's one of the test keypairs
 			kn, has := testKeyPairs[ref]
@@ -118,10 +107,8 @@ func TestReplicateUpTo(t *testing.T) {
 			}
 
 			a.EqualValues(kn.count, upToResp.Sequence)
+			i++
 		}
-
-		r.False(src.Next(ctx))
-		r.NoError(src.Err())
 
 		return i
 	}

@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"iter"
 	"os"
 	"path/filepath"
 	"testing"
@@ -81,14 +82,15 @@ func testPublishPerAlgo(algo refs.RefAlgo) func(t *testing.T) {
 		src, err := c.PrivateRead()
 		r.NoError(err, "failed to open private stream")
 
-		more := src.Next(context.TODO())
-		r.True(more, "expected to get a message")
+		next, stop := iter.Pull(src.Iter(context.TODO()))
+		defer stop()
+
+		rawMsg, ok := next()
+		r.True(ok, "expected to get a message")
 
 		var savedMsg refs.KeyValueRaw
-		rawMsg, err := src.Bytes()
-		r.NoError(err, "failed to get msg")
 		err = json.Unmarshal(rawMsg, &savedMsg)
-		r.NoError(err, "failed to unnpack msg")
+		r.NoError(err, "failed to unpack msg")
 
 		if !a.True(savedMsg.Key().Equal(ref)) {
 			whoops, err := srv.Get(ref)
@@ -96,8 +98,8 @@ func testPublishPerAlgo(algo refs.RefAlgo) func(t *testing.T) {
 			t.Log(string(whoops.ContentBytes()))
 		}
 
-		more = src.Next(context.TODO())
-		r.False(more)
+		_, ok = next()
+		r.False(ok)
 
 		// try with v2 query (SeqWrap removed; iterator yields (seq, value) tuples)
 		pl, ok := srv.GetMultiLog(multilogs.IndexNamePrivates)
