@@ -176,12 +176,39 @@ func (h *LegacyGossip) fetchFeed(
 		return fmt.Errorf("fetchFeed(%s:%d) failed to create source: %w", fr.String(), latestSeq, err)
 	}
 
+	const fetchBatchSize = 128
+	batch := make([][]byte, 0, fetchBatchSize)
 	for b := range src.Iter(ctx) {
-		err = snk.Verify(b)
-		if err != nil {
-			return err
+		// Copy the bytes — the iterator may reuse the underlying buffer
+		raw := make([]byte, len(b))
+		copy(raw, b)
+		batch = append(batch, raw)
+		if len(batch) >= fetchBatchSize {
+			verified, verifyErr := snk.VerifyBatch(batch)
+			if verifyErr != nil {
+				return verifyErr
+			}
+			if len(verified) > 0 {
+				if _, saveErr := h.verifyRouter.SaveBatch(verified); saveErr != nil {
+					return saveErr
+				}
+			}
+			latestSeq += len(verified)
+			batch = batch[:0]
 		}
-		latestSeq++
+	}
+	// flush remainder
+	if len(batch) > 0 {
+		verified, verifyErr := snk.VerifyBatch(batch)
+		if verifyErr != nil {
+			return verifyErr
+		}
+		if len(verified) > 0 {
+			if _, saveErr := h.verifyRouter.SaveBatch(verified); saveErr != nil {
+				return saveErr
+			}
+		}
+		latestSeq += len(verified)
 	}
 
 	if err := src.Err(); err != nil {

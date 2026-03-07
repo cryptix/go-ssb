@@ -24,6 +24,11 @@ type SequencedVerificationSink interface {
 	Seq() int64
 
 	Verify([]byte) error
+
+	// VerifyBatch verifies a batch of messages under a single lock acquisition.
+	// It does NOT save — the caller is responsible for bulk saving.
+	// Returns verified messages up to the first error (feeds are sequential).
+	VerifyBatch(msgs [][]byte) ([]refs.Message, error)
 }
 
 type SaveMessager interface {
@@ -185,6 +190,36 @@ func (ld *generalVerifyDrain) Verify(msg []byte) error {
 	ld.latestSeq = int64(next.Seq())
 	ld.latestMsg = next
 	return nil
+}
+
+// VerifyBatch verifies a batch of raw messages under a single lock acquisition.
+// It does NOT save the messages — the caller is responsible for bulk saving.
+// Returns all successfully verified messages. If a message fails verification,
+// returns the verified messages so far along with the error.
+func (ld *generalVerifyDrain) VerifyBatch(msgs [][]byte) ([]refs.Message, error) {
+	ld.mu.Lock()
+	defer ld.mu.Unlock()
+
+	verified := make([]refs.Message, 0, len(msgs))
+	for _, raw := range msgs {
+		next, err := ld.verify.Verify(raw)
+		if err != nil {
+			return verified, fmt.Errorf("message(%s:%d) verify failed: %w", ld.who.ShortSigil(), ld.latestSeq, err)
+		}
+
+		err = ValidateNext(ld.latestMsg, next)
+		if err != nil {
+			if err == errSkip {
+				continue
+			}
+			return verified, err
+		}
+
+		ld.latestSeq = int64(next.Seq())
+		ld.latestMsg = next
+		verified = append(verified, next)
+	}
+	return verified, nil
 }
 
 var errSkip = errors.New("ValidateNext: already got message")

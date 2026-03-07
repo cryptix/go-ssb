@@ -174,15 +174,64 @@ func (h *MUXRPCHandler) Loop(ctx context.Context, tx *muxrpc.ByteSink, rx *muxrp
 		return
 	}
 
+	const ebtBatchSize = 128
+	type pendingMsg struct {
+		author refs.FeedRef
+		raw    []byte
+	}
+	pending := make([]pendingMsg, 0, ebtBatchSize)
+
+	flushPending := func() {
+		if len(pending) == 0 {
+			return
+		}
+		// Group by author
+		byAuthor := make(map[string][]int) // author string -> indices into pending
+		authorOrder := make([]string, 0)
+		for i, pm := range pending {
+			key := pm.author.String()
+			if _, exists := byAuthor[key]; !exists {
+				authorOrder = append(authorOrder, key)
+			}
+			byAuthor[key] = append(byAuthor[key], i)
+		}
+
+		for _, authorKey := range authorOrder {
+			indices := byAuthor[authorKey]
+			author := pending[indices[0]].author
+
+			vsnk, sinkErr := h.verify.GetSink(author, true)
+			if sinkErr != nil {
+				h.check(sinkErr)
+				continue
+			}
+
+			raws := make([][]byte, len(indices))
+			for j, idx := range indices {
+				raws[j] = pending[idx].raw
+			}
+
+			verified, verifyErr := vsnk.VerifyBatch(raws)
+			if len(verified) > 0 {
+				if _, saveErr := h.verify.SaveBatch(verified); saveErr != nil {
+					h.check(saveErr)
+					continue
+				}
+			}
+			if verifyErr != nil {
+				// TODO: mark feed as bad
+				h.check(verifyErr)
+			}
+		}
+		pending = pending[:0]
+	}
+
 	for jsonBody := range rx.Iter(ctx) {
 
 		var frontierUpdate ssb.NetworkFrontier
 		err = json.Unmarshal(jsonBody, &frontierUpdate)
 		if err != nil { // assume it's a message
 
-			// redundant pass of finding out the author
-			// would be rad to get this from the pretty-printed version
-			// and just pass that to verify
 			var msgWithAuthor struct {
 				Author refs.FeedRef
 			}
@@ -204,20 +253,20 @@ func (h *MUXRPCHandler) Loop(ctx context.Context, tx *muxrpc.ByteSink, rx *muxrp
 				continue
 			}
 
-			vsnk, err := h.verify.GetSink(msgWithAuthor.Author, true)
-			if err != nil {
-				h.check(err)
-				continue
-			}
+			// Copy bytes — the iterator may reuse the buffer
+			raw := make([]byte, len(jsonBody))
+			copy(raw, jsonBody)
+			pending = append(pending, pendingMsg{author: msgWithAuthor.Author, raw: raw})
 
-			err = vsnk.Verify(jsonBody)
-			if err != nil {
-				// TODO: mark feed as bad
-				h.check(err)
+			if len(pending) >= ebtBatchSize {
+				flushPending()
 			}
 
 			continue
 		}
+
+		// Frontier update — flush pending messages first
+		flushPending()
 
 		// update our network perception with the full merge
 		_, err = h.stateMatrix.Update(peer, frontierUpdate)
@@ -286,6 +335,9 @@ func (h *MUXRPCHandler) Loop(ctx context.Context, tx *muxrpc.ByteSink, rx *muxrp
 			session.Subscribed(feed, cancel)
 		}
 	}
+
+	// Flush any remaining pending messages
+	flushPending()
 
 	h.check(rx.Err())
 }

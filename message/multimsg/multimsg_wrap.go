@@ -70,3 +70,51 @@ func (wl *WrappedLog) AppendMessage(msg refs.Message) (int64, error) {
 
 	return wl.Alterable.Append(&mm)
 }
+
+// AppendBatchMessages wraps multiple refs.Messages into MultiMessages and appends them.
+// When the underlying margaret log supports AppendBatch (single lock + single fsync),
+// this will use it. For now, falls back to sequential Append calls.
+func (wl *WrappedLog) AppendBatchMessages(msgs []refs.Message) ([]int64, error) {
+	if len(msgs) == 0 {
+		return nil, nil
+	}
+
+	now := wl.receivedNow()
+	mms := make([]*MultiMessage, len(msgs))
+	for i, msg := range msgs {
+		var mm MultiMessage
+		mm.key = msg.Key()
+
+		switch tv := msg.(type) {
+		case *legacy.StoredMessage:
+			mm.tipe = Legacy
+			mm.Message = tv
+			tv.Timestamp_ = now
+		case *gabbygrove.Transfer:
+			mm.tipe = Gabby
+			mm.Message = tv
+			mm.received = now
+		case *metafeed.Message:
+			mm.tipe = MetaFeed
+			mm.Message = tv
+			mm.received = now
+		default:
+			return nil, fmt.Errorf("wrappedLog: unsupported message type: %T", msg)
+		}
+		mms[i] = &mm
+	}
+
+	// TODO: when margaret supports AppendBatch, use it via type assertion:
+	//   if batcher, ok := wl.Alterable.(margaret.BatchAppender[*MultiMessage]); ok {
+	//       return batcher.AppendBatch(mms)
+	//   }
+	seqs := make([]int64, len(mms))
+	for i, mm := range mms {
+		seq, err := wl.Alterable.Append(mm)
+		if err != nil {
+			return seqs[:i], fmt.Errorf("batch append failed at index %d: %w", i, err)
+		}
+		seqs[i] = seq
+	}
+	return seqs, nil
+}
