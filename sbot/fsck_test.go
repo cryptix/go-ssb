@@ -195,6 +195,11 @@ func testFSCKmultipleFeeds(t *testing.T) {
 	}
 	r.NoError(qry.Err())
 
+	// Wait for the live indexing goroutine to process the doubled entries.
+	// ReceiveLog.Append() doesn't synchronously trigger index updates;
+	// only PublishLog.Publish() does (via WaitUntilIndexesAreSynced callback).
+	theBot.WaitUntilIndexesAreSynced()
+
 	err := theBot.FSCK(FSCKWithMode(FSCKModeLength))
 	r.Error(err)
 

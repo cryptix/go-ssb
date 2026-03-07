@@ -80,6 +80,7 @@ type Sbot struct {
 	// Shutdown needs to be called to shutdown indexing
 	Shutdown      context.CancelFunc
 	closers       multicloser.MultiCloser
+	combIdx       *multilogs.CombinedIndex
 	idxDone       errgroup.Group
 	idxInSync     sync.WaitGroup
 	idxNumSyncing int64
@@ -376,6 +377,7 @@ func New(fopts ...Option) (*Sbot, error) {
 		}
 	}
 
+	s.combIdx = combIdx
 	s.serveIndex("combined", combIdx)
 	s.closers.AddCloser(combIdx)
 
@@ -874,6 +876,48 @@ func New(fopts ...Option) (*Sbot, error) {
 	return s, nil
 }
 
+// ReindexAll forces a full re-index of all sublogs from the rxlog.
+// This is a non-destructive repair that clears all indexes and rebuilds them.
+func (s *Sbot) ReindexAll() error {
+	if s.combIdx == nil {
+		return fmt.Errorf("sbot: combined index not initialized")
+	}
+
+	// Force re-index by triggering VerifyConsistency's rewind path.
+	// We need to clear sublogs and set state to -1, then re-index.
+	// The simplest way: clear all user sublogs, reset state, call Index.
+
+	// Clear user sublogs
+	feeds, err := s.Users.List()
+	if err != nil {
+		return fmt.Errorf("reindex: failed to list feeds: %w", err)
+	}
+	for _, addr := range feeds {
+		s.Users.Delete(addr)
+	}
+
+	// Clear other sublogs
+	if addrs, err := s.ByType.List(); err == nil {
+		for _, addr := range addrs {
+			s.ByType.Delete(addr)
+		}
+	}
+	if addrs, err := s.Tangles.List(); err == nil {
+		for _, addr := range addrs {
+			s.Tangles.Delete(addr)
+		}
+	}
+	if addrs, err := s.Private.List(); err == nil {
+		for _, addr := range addrs {
+			s.Private.Delete(addr)
+		}
+	}
+
+	// Reset the combined index state and re-index
+	s.combIdx.ResetState()
+	return s.combIdx.Index(s.ReceiveLog)
+}
+
 // Close closes the bot by stopping network connections and closing the internal databases
 func (s *Sbot) Close() error {
 	s.closedMu.Lock()
@@ -901,6 +945,16 @@ func (s *Sbot) Close() error {
 		level.Warn(closeEvt).Log("msg", "index group had errors", "err", err)
 	}
 	level.Debug(closeEvt).Log("msg", "waited for indexes to close")
+
+	// Flush all roaring bitmap data and persist the CombinedIndex state BEFORE
+	// closing the multilogs. This ensures the state file matches the flushed
+	// bitmap data on disk, preventing the state-ahead-of-data issue that causes
+	// feeds to appear corrupted on the next startup.
+	if s.combIdx != nil {
+		if err := s.combIdx.FlushAndSave(); err != nil {
+			level.Warn(closeEvt).Log("msg", "combined index flush failed", "err", err)
+		}
+	}
 
 	if err := s.closers.Close(); err != nil {
 		if s.closeErr == nil {

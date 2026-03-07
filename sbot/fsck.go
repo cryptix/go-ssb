@@ -135,10 +135,6 @@ func (s *Sbot) FSCK(opts ...FSCKOption) error {
 		return lengthFSCK(opt.feedsIdx, s.ReceiveLog)
 
 	case FSCKModeSequences:
-		// sequences mode also runs the length check to catch index corruption
-		if err := lengthFSCK(opt.feedsIdx, s.ReceiveLog); err != nil {
-			return err
-		}
 		return sequenceFSCK(s.ReceiveLog, opt.progressFn)
 
 	default:

@@ -428,7 +428,8 @@ func runSbot() error {
 
 	err = sbot.FSCK(mksbot.FSCKWithFeedIndex(uf), mksbot.FSCKWithMode(fsckMode))
 	if err != nil {
-		if !flagRepair {
+		if !flagRepair && exitAfterFSCK {
+			// Explicit -fsck without -repair: just report and exit
 			return fmt.Errorf("fsck returned: %w", err)
 		}
 
@@ -445,37 +446,59 @@ func runSbot() error {
 				"logical-seq", e.Logical)
 		}
 
-		// Repair all broken feeds (truncate to last valid message)
-		err = sbot.HealRepo(report)
-		if err != nil {
-			return fmt.Errorf("fsck: repair failed: %w", err)
+		if flagRepair {
+			// Explicit -repair: use HealRepo (scans rxlog, nulls bad entries, rebuilds sublogs)
+			err = sbot.HealRepo(report)
+			if err != nil {
+				return fmt.Errorf("fsck: repair failed: %w", err)
+			}
+
+			// Verify the repair was successful by re-running fsck
+			level.Info(log).Log("fsck", "verifying repair")
+			verifyErr := sbot.FSCK(mksbot.FSCKWithFeedIndex(uf), mksbot.FSCKWithMode(fsckMode))
+			if verifyErr != nil {
+				level.Error(log).Log("fsck", "repair-incomplete",
+					"err", verifyErr,
+					"msg", "repair did not produce a clean state")
+				sbot.Shutdown()
+				err := sbot.Close()
+				if err != nil {
+					return fmt.Errorf("fsck: failed to stop sbot: %w", err)
+				}
+				return fmt.Errorf("fsck: repair did not produce a clean state: %w", verifyErr)
+			}
+
+			level.Info(log).Log("fsck", "repair-complete",
+				"feeds-repaired", len(report.Errors),
+				"msg", "verification passed")
+
+			sbot.Shutdown()
+			err = sbot.Close()
+			if err != nil {
+				return fmt.Errorf("fsck: failed to stop sbot after repair: %w", err)
+			}
+			return nil
 		}
 
-		// Verify the repair was successful by re-running fsck
-		level.Info(log).Log("fsck", "verifying repair")
+		// Normal startup: auto-repair index issues by re-indexing.
+		// This is a non-destructive repair — it doesn't null any rxlog entries,
+		// it just rebuilds the sublogs from the rxlog data.
+		level.Warn(log).Log("fsck", "auto-repair",
+			"broken-feeds", len(report.Errors),
+			"msg", "re-indexing to repair index inconsistencies")
+
+		err = sbot.ReindexAll()
+		if err != nil {
+			return fmt.Errorf("fsck: auto-repair re-index failed: %w", err)
+		}
+
+		// Re-run fsck to verify
 		verifyErr := sbot.FSCK(mksbot.FSCKWithFeedIndex(uf), mksbot.FSCKWithMode(fsckMode))
 		if verifyErr != nil {
-			level.Error(log).Log("fsck", "repair-incomplete",
-				"err", verifyErr,
-				"msg", "repair did not produce a clean state")
-			sbot.Shutdown()
-			err := sbot.Close()
-			if err != nil {
-				return fmt.Errorf("fsck: failed to stop sbot: %w", err)
-			}
-			return fmt.Errorf("fsck: repair did not produce a clean state: %w", verifyErr)
+			return fmt.Errorf("fsck: auto-repair did not produce a clean state: %w", verifyErr)
 		}
-
-		level.Info(log).Log("fsck", "repair-complete",
-			"feeds-repaired", len(report.Errors),
-			"msg", "verification passed")
-
-		sbot.Shutdown()
-		err = sbot.Close()
-		if err != nil {
-			return fmt.Errorf("fsck: failed to stop sbot after repair: %w", err)
-		}
-		return nil
+		level.Info(log).Log("fsck", "auto-repair-complete",
+			"feeds-repaired", len(report.Errors))
 	}
 	if exitAfterFSCK {
 		level.Info(log).Log("fsck", "completed", "mode", fsckMode)

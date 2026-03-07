@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -73,9 +72,17 @@ func NewCombinedIndex(
 		rxlog:        rxlog,
 		orderdHelper: oh,
 
-		file: idxStateFile,
-		l:    &sync.Mutex{},
+		file:      idxStateFile,
+		l:         &sync.Mutex{},
+		latestSeq: margaret.SeqEmpty,
 	}
+
+	// Load the persisted sequence so latestSeq matches what's on disk.
+	var diskSeq int64
+	if err := persist.Load(idx.file, &diskSeq); err == nil {
+		idx.latestSeq = diskSeq
+	}
+
 	return idx, nil
 }
 
@@ -96,6 +103,11 @@ type CombinedIndex struct {
 
 	file *os.File
 	l    *sync.Mutex
+
+	// latestSeq tracks the most recently processed rxlog sequence in memory.
+	// It's only persisted to the state file AFTER flushing the roaring multilogs,
+	// ensuring the state file never gets ahead of the actual bitmap data on disk.
+	latestSeq int64
 
 	// onEntry is called for each processed entry during Index(), if set.
 	// Used by serveIndex to report progress.
@@ -182,51 +194,33 @@ func (idx *CombinedIndex) Box2Reindex(author refs.FeedRef) error {
 }
 
 // ProcessEntry processes a single log entry, updating all sublogs.
+//
+// The sequence number is tracked in memory (latestSeq) but NOT persisted
+// to the state file here. State is only persisted after flushing the roaring
+// bitmap data to disk (in Index() or FlushAndSave()), ensuring the state file
+// never gets ahead of the actual bitmap data. Re-processing on restart is safe
+// because sublog.Append() is idempotent (skips duplicates via bitmap Contains check).
 func (idx *CombinedIndex) ProcessEntry(seq int64, mm *multimsg.MultiMessage) error {
 	idx.l.Lock()
 	defer idx.l.Unlock()
 
-	if mm.Message == nil {
-		// persist the current sequence number even for nulled entries
-		err := persist.Save(idx.file, seq)
+	if mm.Message != nil {
+		err := idx.update(seq, mm)
 		if err != nil {
-			return fmt.Errorf("error saving current sequence number: %w", err)
+			return err
 		}
-		return nil // nulled entry
 	}
 
-	err := idx.update(seq, mm)
-	if err != nil {
-		return err
-	}
-
-	// persist the current sequence number AFTER updating all sublogs.
-	// Previously this was done BEFORE update(), which meant a crash between
-	// persist.Save and update() would skip re-processing on restart,
-	// leaving the user-feeds multilog stale. This caused the verification
-	// router to create sinks with latestSeq=0 for feeds that already had
-	// messages, allowing duplicate storage.
-	err = persist.Save(idx.file, seq)
-	if err != nil {
-		return fmt.Errorf("error saving current sequence number: %w", err)
-	}
-
+	idx.latestSeq = seq
 	return nil
 }
 
 // LastProcessedSeq returns the sequence number of the last processed message.
+// This returns the in-memory value, which may be ahead of what's persisted on disk.
 func (idx *CombinedIndex) LastProcessedSeq() int64 {
 	idx.l.Lock()
 	defer idx.l.Unlock()
-
-	var seq int64
-	if err := persist.Load(idx.file, &seq); err != nil {
-		if !errors.Is(err, io.EOF) {
-			return margaret.SeqEmpty
-		}
-		return margaret.SeqEmpty
-	}
-	return seq
+	return idx.latestSeq
 }
 
 // Index processes all unprocessed entries from the given log.
@@ -248,20 +242,25 @@ func (idx *CombinedIndex) Index(log margaret.Log[*multimsg.MultiMessage]) error 
 			idx.onEntry()
 		}
 		count++
-		// Periodically flush the user-feeds multilog to disk during bulk
-		// re-indexing. Without this, a crash during a large re-index could
-		// lose all the in-memory bitmap updates (roaring only flushes every
-		// 13s via its background goroutine).
+		// Periodically flush the roaring bitmaps AND persist state during
+		// bulk re-indexing. State is only saved AFTER flush, so the state
+		// file can never reference bitmap data that isn't on disk yet.
 		if count%1000 == 0 {
 			if err := idx.users.Flush(); err != nil {
 				return fmt.Errorf("error flushing user feeds during index: %w", err)
 			}
+			if err := persist.Save(idx.file, idx.latestSeq); err != nil {
+				return fmt.Errorf("error saving state after flush: %w", err)
+			}
 		}
 	}
-	// Final flush after processing all entries
+	// Final flush + state save after processing all entries.
 	if count > 0 {
 		if err := idx.users.Flush(); err != nil {
 			return fmt.Errorf("error flushing user feeds after index: %w", err)
+		}
+		if err := persist.Save(idx.file, idx.latestSeq); err != nil {
+			return fmt.Errorf("error saving state after final flush: %w", err)
 		}
 	}
 	return qry.Err()
@@ -281,12 +280,8 @@ func (idx *CombinedIndex) VerifyConsistency(rxlog margaret.Log[*multimsg.MultiMe
 	idx.l.Lock()
 	defer idx.l.Unlock()
 
-	lastSeq := int64(margaret.SeqEmpty)
-	if loadErr := persist.Load(idx.file, &lastSeq); loadErr != nil {
-		return false, nil // no state file yet, nothing to verify
-	}
-	if lastSeq < 0 {
-		return false, nil // empty, nothing to verify
+	if idx.latestSeq < 0 {
+		return false, nil // empty or not initialized, nothing to verify
 	}
 
 	// List all known feeds and check each one
@@ -366,12 +361,13 @@ func (idx *CombinedIndex) VerifyConsistency(rxlog margaret.Log[*multimsg.MultiMe
 	// Reset the state to force a full re-index from the beginning.
 	// A partial rewind isn't safe because we don't know how far back
 	// the corruption extends.
-	rewindTo := int64(-1)
-	if err := persist.Save(idx.file, rewindTo); err != nil {
+	prevSeq := idx.latestSeq
+	idx.latestSeq = margaret.SeqEmpty
+	if err := persist.Save(idx.file, idx.latestSeq); err != nil {
 		return false, fmt.Errorf("consistency: failed to rewind state: %w", err)
 	}
 	fmt.Printf("combined-index: consistency check found %d/%d feeds with missing index entries, forcing full re-index (was at seq %d)\n",
-		broken, len(feeds), lastSeq)
+		broken, len(feeds), prevSeq)
 
 	return true, nil
 }
@@ -486,6 +482,43 @@ func (idx *CombinedIndex) update(rxSeq int64, mm *multimsg.MultiMessage) error {
 		}
 		if err := appendSeq(tangleLog, rxSeq); err != nil {
 			return fmt.Errorf("error updating v2 tangle sublog: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// ResetState resets the CombinedIndex state to force a full re-index.
+func (idx *CombinedIndex) ResetState() {
+	idx.l.Lock()
+	defer idx.l.Unlock()
+	idx.latestSeq = margaret.SeqEmpty
+	persist.Save(idx.file, idx.latestSeq)
+}
+
+// FlushAndSave flushes all roaring bitmap multilogs to disk and then persists
+// the current sequence number. This must be called before the multilogs are
+// closed to ensure the state file matches the flushed bitmap data.
+//
+// Call this from sbot.Close() BEFORE closing the roaring multilogs.
+func (idx *CombinedIndex) FlushAndSave() error {
+	idx.l.Lock()
+	defer idx.l.Unlock()
+
+	// Flush all roaring multilogs so bitmap data is on disk.
+	for _, ml := range []*roaring.MultiLog{idx.users, idx.private, idx.byType, idx.tangles, idx.orderdHelper} {
+		if ml == nil {
+			continue
+		}
+		if err := ml.Flush(); err != nil {
+			return fmt.Errorf("combined-index: flush error: %w", err)
+		}
+	}
+
+	// Now save state — guaranteed to match what's on disk.
+	if idx.latestSeq >= 0 {
+		if err := persist.Save(idx.file, idx.latestSeq); err != nil {
+			return fmt.Errorf("combined-index: state save error: %w", err)
 		}
 	}
 
