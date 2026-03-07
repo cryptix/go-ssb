@@ -8,7 +8,7 @@ import (
 	"net"
 	"sync"
 
-	"github.com/ssbc/go-muxrpc/v2"
+	"github.com/ssbc/go-muxrpc/v3"
 )
 
 type Plugin interface {

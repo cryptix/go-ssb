@@ -21,7 +21,7 @@ import (
 	"github.com/dgraph-io/badger/v3"
 	"github.com/go-kit/kit/metrics"
 	"github.com/rs/cors"
-	"github.com/ssbc/go-muxrpc/v2"
+	"github.com/ssbc/go-muxrpc/v3"
 	"github.com/ssbc/go-netwrap"
 	mindexes "github.com/ssbc/margaret/v2/indexes"
 	"github.com/ssbc/margaret/v2/multilog"

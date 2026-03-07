@@ -221,7 +221,7 @@ index c4d475f..51c2757 100644
 +++ b/go.mod
 @@ -6,6 +6,8 @@ module github.com/ssbc/go-ssb
 
-+replace github.com/ssbc/go-muxrpc/v2 => ./../go-muxrpc
++replace github.com/ssbc/go-muxrpc/v3 => ./../go-muxrpc
 +
 ```
 

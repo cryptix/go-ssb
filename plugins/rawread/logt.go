@@ -12,14 +12,14 @@ import (
 	"time"
 
 	bmap "github.com/dgraph-io/sroar"
-	"github.com/ssbc/go-muxrpc/v2"
+	"github.com/ssbc/go-muxrpc/v3"
 	margaret "github.com/ssbc/margaret/v2"
 	"github.com/ssbc/margaret/v2/multilog"
 	"github.com/ssbc/margaret/v2/multilog/roaring"
 	"go.mindeco.de/log"
 	"go.mindeco.de/log/level"
 
-	"github.com/ssbc/go-muxrpc/v2/typemux"
+	"github.com/ssbc/go-muxrpc/v3/typemux"
 	"github.com/ssbc/go-ssb"
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/internal/mutil"

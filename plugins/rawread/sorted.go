@@ -10,12 +10,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ssbc/go-muxrpc/v2"
+	"github.com/ssbc/go-muxrpc/v3"
 	margaret "github.com/ssbc/margaret/v2"
 	"go.mindeco.de/log"
 	"go.mindeco.de/log/level"
 
-	"github.com/ssbc/go-muxrpc/v2/typemux"
+	"github.com/ssbc/go-muxrpc/v3/typemux"
 	"github.com/ssbc/go-ssb"
 	"github.com/ssbc/go-ssb/message"
 	"github.com/ssbc/go-ssb/message/multimsg"

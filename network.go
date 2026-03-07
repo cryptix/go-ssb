@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/ssbc/go-muxrpc/v2"
+	"github.com/ssbc/go-muxrpc/v3"
 	refs "github.com/ssbc/go-ssb-refs"
 )
 

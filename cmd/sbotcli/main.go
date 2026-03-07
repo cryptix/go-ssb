@@ -22,7 +22,7 @@ import (
 	"time"
 
 	goon "github.com/shurcooL/go-goon"
-	"github.com/ssbc/go-muxrpc/v2"
+	"github.com/ssbc/go-muxrpc/v3"
 	"github.com/ssbc/go-netwrap"
 	"github.com/ssbc/go-secretstream"
 	"github.com/ssbc/go-ssb/invite"

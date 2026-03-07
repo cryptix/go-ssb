@@ -20,8 +20,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/ssbc/go-muxrpc/v2"
-	"github.com/ssbc/go-muxrpc/v2/codec"
+	"github.com/ssbc/go-muxrpc/v3"
+	"github.com/ssbc/go-muxrpc/v3/codec"
 	"github.com/ssbc/go-ssb"
 	"github.com/ssbc/go-ssb/internal/testutils"
 )

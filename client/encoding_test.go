@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ssbc/go-muxrpc/v2"
+	"github.com/ssbc/go-muxrpc/v3"
 	margaret "github.com/ssbc/margaret/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

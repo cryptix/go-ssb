@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ssbc/go-muxrpc/v2"
+	"github.com/ssbc/go-muxrpc/v3"
 	"github.com/ssbc/go-netwrap"
 	margaret "github.com/ssbc/margaret/v2"
 	"github.com/stretchr/testify/assert"

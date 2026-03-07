@@ -15,7 +15,7 @@ import (
 
 	"github.com/go-kit/kit/metrics"
 	"github.com/ssbc/go-luigi"
-	"github.com/ssbc/go-muxrpc/v2"
+	"github.com/ssbc/go-muxrpc/v3"
 	"github.com/ssbc/go-ssb/internal/broadcasts"
 	"go.mindeco.de/log"
 	"go.mindeco.de/log/level"

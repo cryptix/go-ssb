@@ -8,7 +8,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/ssbc/go-muxrpc/v2"
+	"github.com/ssbc/go-muxrpc/v3"
 	refs "github.com/ssbc/go-ssb-refs"
 	"go.mindeco.de/logging"
 

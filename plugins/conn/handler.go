@@ -11,8 +11,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/ssbc/go-muxrpc/v2"
-	"github.com/ssbc/go-muxrpc/v2/typemux"
+	"github.com/ssbc/go-muxrpc/v3"
+	"github.com/ssbc/go-muxrpc/v3/typemux"
 	"github.com/ssbc/go-netwrap"
 	"github.com/ssbc/go-secretstream"
 	"go.mindeco.de/log/level"

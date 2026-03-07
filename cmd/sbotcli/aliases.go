@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/ssbc/go-muxrpc/v2"
+	"github.com/ssbc/go-muxrpc/v3"
 	"github.com/urfave/cli/v2"
 
 	"github.com/ssbc/go-ssb"

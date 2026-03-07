@@ -33,7 +33,7 @@ require (
 	github.com/ssbc/go-gabbygrove v0.2.2
 	github.com/ssbc/go-luigi v0.3.7-0.20230119190114-bd28e676fa99
 	github.com/ssbc/go-metafeed v1.1.3
-	github.com/ssbc/go-muxrpc/v2 v2.0.14-0.20221111190521-10382533750c
+	github.com/ssbc/go-muxrpc/v3 v3.0.0-00010101000000-000000000000
 	github.com/ssbc/go-netwrap v0.1.5-0.20221019160355-cd323bb2e29d
 	github.com/ssbc/go-secretstream v1.2.11-0.20221019175226-fa042d4912fe
 	github.com/ssbc/go-ssb-multiserver v0.1.5-0.20221019203850-917ae0e23d57
@@ -93,3 +93,5 @@ require (
 )
 
 replace github.com/ssbc/margaret/v2 => ../margaret
+
+replace github.com/ssbc/go-muxrpc/v3 => ../go-muxrpc

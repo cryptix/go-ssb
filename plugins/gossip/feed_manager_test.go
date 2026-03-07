@@ -14,8 +14,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ssbc/go-muxrpc/v2"
-	"github.com/ssbc/go-muxrpc/v2/codec"
+	"github.com/ssbc/go-muxrpc/v3"
+	"github.com/ssbc/go-muxrpc/v3/codec"
 	"github.com/ssbc/margaret/v2/multilog/roaring"
 	roaringfs "github.com/ssbc/margaret/v2/multilog/roaring/fs"
 	"github.com/stretchr/testify/require"

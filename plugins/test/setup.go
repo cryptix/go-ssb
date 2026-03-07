@@ -17,8 +17,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.mindeco.de/log"
 
-	"github.com/ssbc/go-muxrpc/v2"
-	"github.com/ssbc/go-muxrpc/v2/debug"
+	"github.com/ssbc/go-muxrpc/v3"
+	"github.com/ssbc/go-muxrpc/v3/debug"
 	"github.com/ssbc/go-netwrap"
 	"github.com/ssbc/go-secretstream"
 

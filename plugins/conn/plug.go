@@ -5,7 +5,7 @@
 package conn
 
 import (
-	"github.com/ssbc/go-muxrpc/v2"
+	"github.com/ssbc/go-muxrpc/v3"
 	"github.com/ssbc/go-ssb"
 	"go.mindeco.de/logging"
 )

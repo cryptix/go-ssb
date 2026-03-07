@@ -15,7 +15,7 @@ import (
 
 	"go.mindeco.de/log"
 
-	"github.com/ssbc/go-muxrpc/v2"
+	"github.com/ssbc/go-muxrpc/v3"
 	margaret "github.com/ssbc/margaret/v2"
 	"github.com/ssbc/margaret/v2/multilog/roaring"
 	"go.mindeco.de/log/level"

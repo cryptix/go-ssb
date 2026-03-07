@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/ssbc/go-muxrpc/v2"
+	"github.com/ssbc/go-muxrpc/v3"
 	"github.com/ssbc/go-ssb/blobstore"
 	"go.mindeco.de/log"
 	"go.mindeco.de/logging"

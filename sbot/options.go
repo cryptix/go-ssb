@@ -15,7 +15,7 @@ import (
 	"strings"
 
 	"github.com/go-kit/kit/metrics"
-	"github.com/ssbc/go-muxrpc/v2"
+	"github.com/ssbc/go-muxrpc/v3"
 	"github.com/ssbc/go-netwrap"
 	kitlog "go.mindeco.de/log"
 	"go.mindeco.de/log/level"

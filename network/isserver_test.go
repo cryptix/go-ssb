@@ -14,7 +14,7 @@ import (
 	refs "github.com/ssbc/go-ssb-refs"
 	"go.mindeco.de/log"
 
-	"github.com/ssbc/go-muxrpc/v2"
+	"github.com/ssbc/go-muxrpc/v3"
 	"github.com/ssbc/go-ssb"
 
 	"github.com/ssbc/go-ssb/network"

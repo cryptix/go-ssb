@@ -9,7 +9,7 @@ import (
 	"fmt"
 
 	"github.com/go-kit/kit/metrics"
-	"github.com/ssbc/go-muxrpc/v2"
+	"github.com/ssbc/go-muxrpc/v3"
 	"github.com/ssbc/go-ssb"
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/message"

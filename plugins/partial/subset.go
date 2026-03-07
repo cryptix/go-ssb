@@ -10,7 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/ssbc/go-muxrpc/v2"
+	"github.com/ssbc/go-muxrpc/v3"
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/query"

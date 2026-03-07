@@ -7,7 +7,7 @@ package ebt
 import (
 	"sync"
 
-	"github.com/ssbc/go-muxrpc/v2"
+	"github.com/ssbc/go-muxrpc/v3"
 	"github.com/ssbc/margaret/v2/multilog/roaring"
 	"go.mindeco.de/logging"
 

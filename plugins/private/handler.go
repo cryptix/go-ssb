@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/ssbc/go-muxrpc/v2"
+	"github.com/ssbc/go-muxrpc/v3"
 	margaret "github.com/ssbc/margaret/v2"
 	"go.mindeco.de/log/level"
 	"go.mindeco.de/logging"

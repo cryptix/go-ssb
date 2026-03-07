@@ -14,7 +14,7 @@ import (
 	"github.com/ssbc/go-ssb/internal/storedrefs"
 	"github.com/ssbc/go-ssb/message/multimsg"
 
-	"github.com/ssbc/go-muxrpc/v2"
+	"github.com/ssbc/go-muxrpc/v3"
 	refs "github.com/ssbc/go-ssb-refs"
 	margaret "github.com/ssbc/margaret/v2"
 	"github.com/ssbc/margaret/v2/multilog/roaring"

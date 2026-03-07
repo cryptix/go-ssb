@@ -26,7 +26,7 @@ import (
 	// debug
 	_ "net/http/pprof"
 
-	"github.com/ssbc/go-muxrpc/v2/debug"
+	"github.com/ssbc/go-muxrpc/v3/debug"
 	"go.mindeco.de/log/level"
 	"go.mindeco.de/logging"
 

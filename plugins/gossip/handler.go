@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/go-kit/kit/metrics"
-	"github.com/ssbc/go-muxrpc/v2"
+	"github.com/ssbc/go-muxrpc/v3"
 	margaret "github.com/ssbc/margaret/v2"
 	"github.com/ssbc/margaret/v2/multilog/roaring"
 	"go.mindeco.de/log"
@@ -149,7 +149,7 @@ func (g *LegacyGossip) HandleCall(
 			req.CloseWithError(err)
 			return
 		}
-		req.Stream.Close()
+		req.Close()
 	}
 
 	snk, err := req.ResponseSink()
@@ -198,7 +198,7 @@ func (g *LegacyGossip) HandleCall(
 
 			if blocks.Has(query.ID) {
 				// dbgLog.Log("msg", "feed blocked")
-				req.Stream.Close()
+				req.Close()
 				return
 			}
 		}

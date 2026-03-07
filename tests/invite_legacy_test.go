@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ssbc/go-muxrpc/v2"
+	"github.com/ssbc/go-muxrpc/v3"
 	"github.com/ssbc/go-netwrap"
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/stretchr/testify/require"
