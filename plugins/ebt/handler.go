@@ -162,7 +162,7 @@ func (h *MUXRPCHandler) Loop(ctx context.Context, tx *muxrpc.ByteSink, rx *muxrp
 	defer func() {
 		h.Sessions.Ended(remoteAddr)
 
-		level.Debug(peerLogger).Log("event", "loop exited", "rx-err", rx.Err())
+		level.Debug(peerLogger).Log("event", "loop exited", "rx-err", rx.Err(), "ctx-err", ctx.Err())
 		err := h.stateMatrix.SaveAndClose(peer)
 		if err != nil {
 			level.Warn(h.info).Log("event", "failed to save state matrix for peer", "err", err)
@@ -259,9 +259,9 @@ func (h *MUXRPCHandler) Loop(ctx context.Context, tx *muxrpc.ByteSink, rx *muxrp
 				continue
 			}
 			ourSeq := userLog.Seq() + 1 // margaret 0-indexed to SSB 1-indexed
-			if ourSeq <= their.Seq {
-				// peer already has everything we have - nothing to send
-				// when we later receive messages from other sources, PushState
+			if ourSeq < their.Seq {
+				// peer has more than us - they are the source, not us.
+				// skip sending; when we later receive messages, PushState
 				// will trigger a new frontier exchange
 				continue
 			}
@@ -273,11 +273,14 @@ func (h *MUXRPCHandler) Loop(ctx context.Context, tx *muxrpc.ByteSink, rx *muxrp
 			arg.Limit = -1
 			arg.Live = true
 
-			// TODO: it might not scale to do this with contexts (each one has a goroutine)
-			// in that case we need to rework the internal/luigiutils MultiSink so that we can unsubscribe on it directly
-			ctx, cancel := context.WithCancel(ctx)
+			// IMPORTANT: use a new variable name (feedCtx) to avoid shadowing
+			// the outer ctx. If we shadow ctx, each iteration chains contexts:
+			//   outerCtx → ctx_a → ctx_b → ctx_c
+			// Then canceling cancel_a (via Unsubscribe or re-Subscribe) would
+			// cascade and cancel ctx_b and ctx_c, killing the entire EBT loop.
+			feedCtx, cancel := context.WithCancel(ctx)
 
-			err = h.livefeeds.CreateStreamHistory(ctx, tx, arg)
+			err = h.livefeeds.CreateStreamHistory(feedCtx, tx, arg)
 			if err != nil {
 				cancel()
 				h.check(err)

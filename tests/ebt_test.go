@@ -154,8 +154,7 @@ func TestEpidemicBroadcastTrees(t *testing.T) {
 		Port: port,
 	}, secretstream.Addr{PubKey: alice.PubKey()})
 
-	connCtx, connCancel := context.WithCancel(context.TODO())
-	err := sbot.Network.Connect(connCtx, wrappedAddr)
+	err := sbot.Network.Connect(context.Background(), wrappedAddr)
 	r.NoError(err, "connect #1 failed")
 
 	//  wait until we have all messages from alice?
@@ -260,6 +259,5 @@ func TestEpidemicBroadcastTrees(t *testing.T) {
 	time.Sleep(10 * time.Second)
 
 	t.Log("test ended")
-	connCancel()
 	ts.wait()
 }
