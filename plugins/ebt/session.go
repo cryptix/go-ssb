@@ -92,12 +92,21 @@ func (s *Sessions) Started(addr net.Addr, peer refs.FeedRef, tx *muxrpc.ByteSink
 }
 
 // Ended notifies the session store that a session has ended.
+// It cancels all feed subscriptions for the session before removing it.
 func (s *Sessions) Ended(addr net.Addr) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// we are using the full ip:port~pubkey notation as the map key
 	mk := addr.String()
+
+	if sess, has := s.open[mk]; has {
+		sess.mu.Lock()
+		for feed, cancel := range sess.subscribed {
+			cancel()
+			delete(sess.subscribed, feed)
+		}
+		sess.mu.Unlock()
+	}
 
 	delete(s.open, mk)
 }
@@ -109,6 +118,23 @@ func (s *Sessions) ForEach(fn func(sess *session)) {
 
 	for _, sess := range s.open {
 		fn(sess)
+	}
+}
+
+// CloseAll cancels all feed subscriptions across all sessions and removes them.
+// Called during shutdown to ensure all replication streams are torn down cleanly.
+func (s *Sessions) CloseAll() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for mk, sess := range s.open {
+		sess.mu.Lock()
+		for feed, cancel := range sess.subscribed {
+			cancel()
+			delete(sess.subscribed, feed)
+		}
+		sess.mu.Unlock()
+		delete(s.open, mk)
 	}
 }
 

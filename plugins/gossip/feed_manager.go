@@ -71,6 +71,18 @@ func NewFeedManager(
 	return fm
 }
 
+// Close shuts down all live feed sinks. After Close, no new messages
+// will be forwarded to registered sinks.
+func (m *FeedManager) Close() {
+	m.liveFeedsMut.Lock()
+	defer m.liveFeedsMut.Unlock()
+
+	for id, sink := range m.liveFeeds {
+		sink.Close()
+		delete(m.liveFeeds, id)
+	}
+}
+
 func (m *FeedManager) serveLiveFeeds() {
 	qry := m.ReceiveLog.Query(
 		margaret.Gt(m.ReceiveLog.Seq()),

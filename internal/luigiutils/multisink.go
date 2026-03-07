@@ -87,11 +87,14 @@ func (f *MultiSink) Send(msg []byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	for s, ctx := range f.sinks {
+	for s, sc := range f.sinks {
+		if sc.ctx.Err() != nil {
+			delete(f.sinks, s)
+			continue
+		}
 		_, err := s.Write(msg)
-		if err != nil || ctx.until <= f.seq {
+		if err != nil || sc.until <= f.seq {
 			delete(f.sinks, s)
 		}
-
 	}
 }

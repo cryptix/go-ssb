@@ -52,6 +52,12 @@ func (h *MUXRPCHandler) check(err error) {
 	}
 }
 
+// Close cancels all active EBT sessions and their feed subscriptions.
+func (h *MUXRPCHandler) Close() error {
+	h.Sessions.CloseAll()
+	return nil
+}
+
 func (MUXRPCHandler) Handled(m muxrpc.Method) bool { return m.String() == "ebt.replicate" }
 
 // HandleConnect does nothing. Feature negotiation is done by sbot

@@ -81,6 +81,7 @@ type Sbot struct {
 	Shutdown      context.CancelFunc
 	closers       multicloser.MultiCloser
 	combIdx       *multilogs.CombinedIndex
+	feedManager   *gossip.FeedManager
 	idxDone       errgroup.Group
 	idxInSync     sync.WaitGroup
 	idxNumSyncing int64
@@ -644,6 +645,7 @@ func New(fopts ...Option) (*Sbot, error) {
 		s.systemGauge,
 		s.eventCounter,
 	)
+	s.feedManager = fm
 
 	// outgoing gossip behavior
 	var histOpts = []interface{}{
@@ -929,6 +931,18 @@ func (s *Sbot) Close() error {
 
 	closeEvt := log.With(s.info, "event", "sbot closing")
 	s.closed = true
+
+	// Cancel all active replication streams before closing the network.
+	// This ensures feed subscriptions and live sinks are torn down cleanly
+	// rather than failing with broken-pipe errors during network close.
+	if s.ebtHandler != nil {
+		s.ebtHandler.Close()
+		level.Debug(closeEvt).Log("msg", "ebt sessions closed")
+	}
+	if s.feedManager != nil {
+		s.feedManager.Close()
+		level.Debug(closeEvt).Log("msg", "feed manager closed")
+	}
 
 	if s.Network != nil {
 		if err := s.Network.Close(); err != nil {
