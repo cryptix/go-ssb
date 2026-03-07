@@ -33,6 +33,12 @@ type publishLog struct {
 	waitForIndexesCallback func()
 
 	create creater
+
+	// Cache of the last message we published, to avoid a race condition
+	// with async index updates between sequential publishes.
+	// Without this, back-to-back publishes can read a stale byAuthor.Seq()
+	// before the combined index processes the previous message.
+	lastMsg refs.Message
 }
 
 func (pl *publishLog) Publish(content interface{}) (refs.Message, error) {
@@ -49,23 +55,30 @@ func (pl *publishLog) Publish(content interface{}) (refs.Message, error) {
 		nextSequence = int64(-1)
 	)
 
-	seq := pl.byAuthor.Seq()
-
-	if seq < 0 {
-		// new feed
-		nextSequence = 1
+	if pl.lastMsg != nil {
+		// use cached state from the previous publish call,
+		// bypassing the async index which may not have caught up yet
+		nextPrevious = pl.lastMsg.Key()
+		nextSequence = pl.lastMsg.Seq() + 1
 	} else {
-		rootSeqVal, err := pl.byAuthor.Get(seq)
-		if err != nil {
-			return nil, fmt.Errorf("publishLog: failed to retrieve current msg: %w", err)
+		seq := pl.byAuthor.Seq()
+
+		if seq < 0 {
+			// new feed
+			nextSequence = 1
+		} else {
+			rootSeqVal, err := pl.byAuthor.Get(seq)
+			if err != nil {
+				return nil, fmt.Errorf("publishLog: failed to retrieve current msg: %w", err)
+			}
+			mm, err := pl.receiveLog.Get(int64(*rootSeqVal))
+			if err != nil {
+				return nil, fmt.Errorf("publishLog: failed to establish current seq: %w", err)
+			}
+			msg := mm.Message
+			nextPrevious = msg.Key()
+			nextSequence = msg.Seq() + 1
 		}
-		mm, err := pl.receiveLog.Get(int64(*rootSeqVal))
-		if err != nil {
-			return nil, fmt.Errorf("publishLog: failed to establish current seq: %w", err)
-		}
-		msg := mm.Message
-		nextPrevious = msg.Key()
-		nextSequence = msg.Seq() + 1
 	}
 
 	nextMsg, err := pl.create.Create(content, nextPrevious, nextSequence)
@@ -83,6 +96,7 @@ func (pl *publishLog) Publish(content interface{}) (refs.Message, error) {
 		return nil, fmt.Errorf("publish: failed to get new stored message: %w", err)
 	}
 
+	pl.lastMsg = mm.Message
 	return mm.Message, nil
 }
 
