@@ -13,7 +13,6 @@ import (
 	"github.com/ssbc/go-ssb"
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/message/legacy"
-	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/sbot"
 	"github.com/stretchr/testify/require"
 )
@@ -66,11 +65,8 @@ func TestPublishMetafeedAnnounce(t *testing.T) {
 	r.NoError(err)
 	t.Log("content:", string(msg.ContentBytes()))
 
-	mm, ok := msg.(*multimsg.MultiMessage)
+	lm, ok := msg.(*legacy.StoredMessage)
 	r.True(ok, "wrong type: %T", msg)
-
-	lm, ok := mm.AsLegacy()
-	r.True(ok)
 
 	t.Log(string(lm.Raw_))
 }
