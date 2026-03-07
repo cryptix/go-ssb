@@ -9,10 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"sync"
 
-	"github.com/ssbc/go-muxrpc/v2"
+	"github.com/ssbc/go-muxrpc/v3"
 	"go.mindeco.de/log/level"
 	"go.mindeco.de/logging"
 
@@ -92,20 +91,18 @@ func (h *createWantsHandler) HandleSource(ctx context.Context, req *muxrpc.Reque
 		return fmt.Errorf("failed to get source: %w", err)
 	}
 
-	for src.Next(ctx) {
-		err = src.Reader(func(r io.Reader) error {
-			var wantMsg blobstore.WantMsg
-			err := json.NewDecoder(r).Decode(&wantMsg)
-			if err != nil {
-				return err
-			}
-			return updates.Pour(ctx, wantMsg)
-		})
+	for b := range src.Iter(ctx) {
+		var wantMsg blobstore.WantMsg
+		err = json.Unmarshal(b, &wantMsg)
+		if err != nil {
+			level.Warn(h.log).Log("event", "onCall", "handler", "createWants", "unmarshal-err", err)
+			break
+		}
+		err = updates.Pour(ctx, wantMsg)
 		if err != nil {
 			level.Warn(h.log).Log("event", "onCall", "handler", "createWants", "pipe-err", err)
 			break
 		}
-
 	}
 
 	if err == nil {

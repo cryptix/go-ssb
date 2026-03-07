@@ -5,12 +5,10 @@
 package repo_test
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 	"time"
 
-	"github.com/ssbc/go-luigi"
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/repo"
 	"github.com/stretchr/testify/assert"
@@ -63,14 +61,11 @@ func TestTimestampSorting(t *testing.T) {
 	r.Error(err)
 	a.Nil(empty)
 
-	// luigi.Source for backwards compat with the existing margaret code
-	src := sorted.AsLuigiSource()
-
-	var elems []interface{}
-	snk := luigi.NewSliceSink(&elems)
-
-	err = luigi.Pump(context.TODO(), snk, src)
-	r.NoError(err)
+	// test iteration
+	var elems []repo.SortedSequence
+	for s := range sorted.Iter() {
+		elems = append(elems, s)
+	}
 	r.Len(elems, 8)
 	t.Log(elems)
 }

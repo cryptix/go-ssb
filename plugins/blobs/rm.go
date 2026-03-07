@@ -13,42 +13,29 @@ import (
 	"github.com/ssbc/go-muxrpc/v3"
 	"go.mindeco.de/logging"
 
-	"github.com/ssbc/go-ssb"
 	refs "github.com/ssbc/go-ssb-refs"
 )
 
 type rmHandler struct {
-	bs  ssb.BlobStore
+	bs  interface{ Delete(refs.BlobRef) error }
 	log logging.Interface
 }
 
-func (rmHandler) HandleConnect(context.Context, muxrpc.Endpoint) {}
+func (h rmHandler) HandleAsync(ctx context.Context, req *muxrpc.Request) (interface{}, error) {
+	var blobRefs []refs.BlobRef
 
-func (h rmHandler) HandleCall(ctx context.Context, req *muxrpc.Request, edp muxrpc.Endpoint) {
-	// TODO: push manifest check into muxrpc
-	if req.Type == "" {
-		req.Type = "async"
-	}
-
-	var refs []refs.BlobRef
-
-	err := json.Unmarshal(req.RawArgs, &refs)
+	err := json.Unmarshal(req.RawArgs, &blobRefs)
 	if err != nil {
-		checkAndLog(h.log, fmt.Errorf("error parsing blob reference: %w", err))
-		return
+		return nil, fmt.Errorf("error parsing blob reference: %w", err)
 	}
-	if len(refs) != 1 {
-		// TODO: change from generic handlers to typed once (source, sink, async..)
-		// async then would have to return a value or an error and not fall into this trap of not closing a stream
-		req.Stream.CloseWithError(errors.New("bad request - wrong args"))
-		return
+	if len(blobRefs) != 1 {
+		return nil, errors.New("bad request - expected exactly one blob ref argument")
 	}
 
-	br := refs[0]
-
-	err = h.bs.Delete(br)
+	err = h.bs.Delete(blobRefs[0])
 	if err != nil {
-		checkAndLog(h.log, fmt.Errorf("error deleting blob: %w", err))
-		err = req.Stream.CloseWithError(errors.New("do not have blob"))
+		return nil, fmt.Errorf("error deleting blob: %w", err)
 	}
+
+	return true, nil
 }

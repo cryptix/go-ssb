@@ -31,7 +31,6 @@ require (
 	github.com/rs/cors v1.11.1
 	github.com/shurcooL/go-goon v1.0.0
 	github.com/ssbc/go-gabbygrove v0.2.2
-	github.com/ssbc/go-luigi v0.3.7-0.20230119190114-bd28e676fa99
 	github.com/ssbc/go-metafeed v1.1.3
 	github.com/ssbc/go-muxrpc/v3 v3.0.0-00010101000000-000000000000
 	github.com/ssbc/go-netwrap v0.1.5-0.20221019160355-cd323bb2e29d

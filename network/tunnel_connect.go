@@ -8,11 +8,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"time"
 
-	"github.com/ssbc/go-muxrpc/v2"
-	"github.com/ssbc/go-muxrpc/v2/typemux"
+	"github.com/ssbc/go-muxrpc/v3"
+	"github.com/ssbc/go-muxrpc/v3/typemux"
 	kitlog "go.mindeco.de/log"
 	"go.mindeco.de/log/level"
 
@@ -143,50 +142,43 @@ func (newConn handleNewConnection) HandleConnect(ctx context.Context, edp muxrpc
 		return
 	}
 
-	// fist object: initial state
-	if !src.Next(ctx) {
-		level.Warn(peerLogger).Log("event", "failed to receive first message", "err", src.Err())
-		return
-	}
+	first := true
+	for b := range src.Iter(ctx) {
+		if first {
+			first = false
+			// first object: initial state
+			var initState struct {
+				Type string
+				IDs  []refs.FeedRef
+			}
+			err = json.Unmarshal(b, &initState)
+			if err != nil {
+				level.Warn(peerLogger).Log("event", "failed to decode initial state", "err", err)
+				return
+			}
+			for i, f := range initState.IDs {
+				level.Info(peerLogger).Log("i", i, "attendant", f.String())
+			}
+			continue
+		}
 
-	stateBytes, err := src.Bytes()
-	if err != nil {
-		level.Warn(peerLogger).Log("event", "failed to receive initial state bytes", "err", err, "src", src.Err())
-		return
-	}
-
-	var initState struct {
-		Type string
-		IDs  []refs.FeedRef
-	}
-	err = json.Unmarshal(stateBytes, &initState)
-	if err != nil {
-		level.Warn(peerLogger).Log("event", "failed to decode initial state", "err", err)
-		return
-	}
-	for i, f := range initState.IDs {
-		level.Info(peerLogger).Log("i", i, "attendant", f.String())
-	}
-
-	// stream further updates
-	for src.Next(ctx) {
-
+		// stream further updates
 		var stateChange struct {
 			Type string       `json:"type"`
 			ID   refs.FeedRef `json:"id"`
 		}
-
-		err := src.Reader(func(rd io.Reader) error {
-			return json.NewDecoder(rd).Decode(&stateChange)
-		})
-		if err != nil {
+		if err := json.Unmarshal(b, &stateChange); err != nil {
 			level.Warn(peerLogger).Log("event", "failed to read from endpoints", "err", err)
 			break
 		}
 		level.Info(peerLogger).Log(stateChange.Type, stateChange.ID.ShortSigil())
 	}
 
-	if err := src.Err(); err != nil {
-		level.Error(peerLogger).Log("event", "endpoints stream closed", "err", err)
+	if !first {
+		if err := src.Err(); err != nil {
+			level.Error(peerLogger).Log("event", "endpoints stream closed", "err", err)
+		}
+	} else {
+		level.Warn(peerLogger).Log("event", "failed to receive first message", "err", src.Err())
 	}
 }

@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/go-kit/kit/metrics"
-	"github.com/ssbc/go-luigi"
 	"github.com/ssbc/go-muxrpc/v3"
 	"github.com/ssbc/go-ssb/internal/broadcasts"
 	"go.mindeco.de/log"
@@ -271,7 +270,7 @@ func (wmgr *WantManager) WantWithDist(ref refs.BlobRef, dist int64) error {
 	return nil
 }
 
-func (wmgr *WantManager) CreateWants(ctx context.Context, sink *muxrpc.ByteSink, edp muxrpc.Endpoint) luigi.Sink {
+func (wmgr *WantManager) CreateWants(ctx context.Context, sink *muxrpc.ByteSink, edp muxrpc.Endpoint) ssb.BlobWantsSink {
 	wmgr.l.Lock()
 	defer wmgr.l.Unlock()
 
@@ -415,14 +414,10 @@ func (proc *wantProc) Close() error {
 	return nil
 }
 
-func (proc *wantProc) Pour(ctx context.Context, v interface{}) error {
+func (proc *wantProc) Pour(ctx context.Context, mIn []ssb.BlobWant) error {
 	dbg := level.Debug(proc.info)
 	dbg = log.With(dbg, "event", "createWants.In")
 
-	mIn, ok := v.(WantMsg)
-	if !ok {
-		return fmt.Errorf("wantProc: unexpected type %T", v)
-	}
 	mOut := make(map[string]int64)
 
 	for _, w := range mIn {

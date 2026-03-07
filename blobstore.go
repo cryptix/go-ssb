@@ -8,8 +8,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"iter"
 
-	"github.com/ssbc/go-luigi"
 	"github.com/ssbc/go-muxrpc/v3"
 
 	refs "github.com/ssbc/go-ssb-refs"
@@ -40,8 +40,8 @@ type BlobStore interface {
 	// Delete deletes a blob from the blob store.
 	Delete(ref refs.BlobRef) error
 
-	// List returns a source of the refs of all stored blobs.
-	List() luigi.Source
+	// List returns an iterator over the refs of all stored blobs.
+	List() iter.Seq2[refs.BlobRef, error]
 
 	// Size returns the size of the blob with given ref.
 	Size(ref refs.BlobRef) (int64, error)
@@ -65,9 +65,15 @@ type WantManager interface {
 	Wants(ref refs.BlobRef) bool
 	WantWithDist(ref refs.BlobRef, dist int64) error
 	//Unwant(ref refs.BlobRef) error
-	CreateWants(context.Context, *muxrpc.ByteSink, muxrpc.Endpoint) luigi.Sink
+	CreateWants(context.Context, *muxrpc.ByteSink, muxrpc.Endpoint) BlobWantsSink
 
 	AllWants() []BlobWant
+}
+
+// BlobWantsSink accepts incoming blob want messages from a remote peer.
+type BlobWantsSink interface {
+	Pour(ctx context.Context, msg []BlobWant) error
+	io.Closer
 }
 
 type CancelFunc func()

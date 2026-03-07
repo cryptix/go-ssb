@@ -12,11 +12,11 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"iter"
 	"log"
 	"os"
 	"path/filepath"
 
-	"github.com/ssbc/go-luigi"
 	"github.com/ssbc/go-ssb/internal/broadcasts"
 
 	"github.com/ssbc/go-ssb"
@@ -117,7 +117,7 @@ func (store *blobStore) Put(blob io.Reader) (refs.BlobRef, error) {
 
 	h := sha256.New()
 	n, err := io.Copy(io.MultiWriter(f, h), blob)
-	if err != nil && !luigi.IsEOS(err) {
+	if err != nil {
 		return refs.BlobRef{}, fmt.Errorf("blobstore.Put: error copying: %w", err)
 	}
 
@@ -200,10 +200,8 @@ func (store *blobStore) Delete(ref refs.BlobRef) error {
 	return nil
 }
 
-func (store *blobStore) List() luigi.Source {
-	return &listSource{
-		basePath: filepath.Join(store.basePath, "sha256"),
-	}
+func (store *blobStore) List() iter.Seq2[refs.BlobRef, error] {
+	return listBlobs(filepath.Join(store.basePath, "sha256"))
 }
 
 func (store *blobStore) Size(ref refs.BlobRef) (int64, error) {

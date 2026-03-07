@@ -6,9 +6,9 @@ package blobs
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
-	"github.com/ssbc/go-luigi"
 	"github.com/ssbc/go-muxrpc/v3"
 	"go.mindeco.de/logging"
 
@@ -20,17 +20,18 @@ type listHandler struct {
 	log logging.Interface
 }
 
-func (listHandler) HandleConnect(context.Context, muxrpc.Endpoint) {}
+func (h listHandler) HandleSource(ctx context.Context, req *muxrpc.Request, snk *muxrpc.ByteSink) error {
+	snk.SetEncoding(muxrpc.TypeJSON)
+	enc := json.NewEncoder(snk)
 
-func (h listHandler) HandleCall(ctx context.Context, req *muxrpc.Request, edp muxrpc.Endpoint) {
-	// TODO: push manifest check into muxrpc
-	if req.Type == "" {
-		req.Type = "source"
+	for ref, err := range h.bs.List() {
+		if err != nil {
+			return fmt.Errorf("error listing blobs: %w", err)
+		}
+		if err := enc.Encode(ref); err != nil {
+			return fmt.Errorf("error encoding blob ref: %w", err)
+		}
 	}
 
-	err := luigi.Pump(ctx, req.Stream, h.bs.List())
-	if err != nil {
-		err = fmt.Errorf("error listing blobs: %w", err)
-		checkAndLog(h.log, err)
-	}
+	return snk.Close()
 }

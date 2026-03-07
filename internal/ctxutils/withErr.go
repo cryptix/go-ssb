@@ -41,7 +41,7 @@ func WithError(ctx context.Context, err error) (context.Context, context.CancelF
 	return next, cls
 }
 
-// errCtx is the context that cancels functions and returns a luigi.EOS error
+// errCtx is the context that cancels functions and returns a custom error
 type errCtx struct {
 	context.Context
 
@@ -55,7 +55,7 @@ func (ctx *errCtx) Done() <-chan struct{} {
 }
 
 // Err returns the error that made the context cancel.
-// returns luigi.EOS if cancelled using our cancel function or the error
+// returns the custom error if cancelled using our cancel function or the error
 // returned by the context below if that was canceled.
 func (ctx *errCtx) Err() error {
 	select {

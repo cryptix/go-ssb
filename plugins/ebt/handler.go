@@ -5,12 +5,10 @@
 package ebt
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 
 	"go.mindeco.de/log"
@@ -157,20 +155,7 @@ func (h *MUXRPCHandler) Loop(ctx context.Context, tx *muxrpc.ByteSink, rx *muxrp
 		return
 	}
 
-	var buf = &bytes.Buffer{}
-	for rx.Next(ctx) { // read/write loop for messages
-
-		buf.Reset()
-		err := rx.Reader(func(r io.Reader) error {
-			_, err := buf.ReadFrom(r)
-			return err
-		})
-		if err != nil {
-			h.check(err)
-			return
-		}
-
-		jsonBody := buf.Bytes()
+	for jsonBody := range rx.Iter(ctx) {
 
 		var frontierUpdate ssb.NetworkFrontier
 		err = json.Unmarshal(jsonBody, &frontierUpdate)

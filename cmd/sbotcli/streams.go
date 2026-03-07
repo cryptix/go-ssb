@@ -5,13 +5,12 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"os"
 
-	"github.com/ssbc/go-muxrpc/v2"
+	"github.com/ssbc/go-muxrpc/v3"
 	cli "github.com/urfave/cli/v2"
 
 	refs "github.com/ssbc/go-ssb-refs"
@@ -227,28 +226,11 @@ var replicateUptoCmd = &cli.Command{
 
 func jsonDrain(w io.Writer, r *muxrpc.ByteSource) error {
 
-	var buf = &bytes.Buffer{}
-	for r.Next(context.TODO()) { // read/write loop for messages
-
-		buf.Reset()
-		err := r.Reader(func(r io.Reader) error {
-			_, err := buf.ReadFrom(r)
-			return err
-		})
+	for b := range r.Iter(context.TODO()) {
+		_, err := os.Stdout.Write(b)
 		if err != nil {
 			return err
 		}
-
-		// jsonReply, err := json.MarshalIndent(buf.Bytes(), "", "  ")
-		// if err != nil {
-		// 	return err
-		// }
-
-		_, err = buf.WriteTo(os.Stdout)
-		if err != nil {
-			return err
-		}
-
 	}
 	return r.Err()
 }

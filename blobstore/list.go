@@ -5,96 +5,70 @@
 package blobstore
 
 import (
-	"context"
 	"encoding/hex"
 	"fmt"
+	"iter"
 	"os"
 	"path/filepath"
-	"sync"
 
 	refs "github.com/ssbc/go-ssb-refs"
-
-	"github.com/ssbc/go-luigi"
 )
 
-type listSource struct {
-	basePath string
-
-	l     sync.Mutex
-	dirs  []string
-	files []string
-}
-
-func (src *listSource) initialize() error {
-	root, err := os.Open(src.basePath)
-	if err != nil {
-		return fmt.Errorf("error opening blobs directory: %w", err)
-	}
-
-	dirs, err := root.Readdir(0)
-	if err != nil {
-		return fmt.Errorf("error reading blobs directory: %w", err)
-	}
-
-	src.dirs = make([]string, len(dirs))
-	for i := range dirs {
-		src.dirs[i] = dirs[i].Name()
-	}
-
-	return nil
-}
-
-func (src *listSource) nextDir() error {
-	var dirPath string
-	dirPath, src.dirs = src.dirs[0], src.dirs[1:]
-
-	dir, err := os.Open(filepath.Join(src.basePath, dirPath))
-	if err != nil {
-		return fmt.Errorf("error opening subdirectory: %w", err)
-	}
-
-	blobs, err := dir.Readdir(0)
-	if err != nil {
-		return fmt.Errorf("error reading blobs subdirectory: %w", err)
-	}
-
-	src.files = make([]string, len(blobs))
-	for i := range blobs {
-		src.files[i] = dirPath + blobs[i].Name()
-	}
-
-	return nil
-}
-
-func (src *listSource) Next(ctx context.Context) (interface{}, error) {
-	src.l.Lock()
-	defer src.l.Unlock()
-
-	if src.dirs == nil {
-		err := src.initialize()
+func listBlobs(basePath string) iter.Seq2[refs.BlobRef, error] {
+	return func(yield func(refs.BlobRef, error) bool) {
+		root, err := os.Open(basePath)
 		if err != nil {
-			return nil, fmt.Errorf("error initializing list source: %w", err)
+			yield(refs.BlobRef{}, fmt.Errorf("error opening blobs directory: %w", err))
+			return
 		}
-	}
+		defer root.Close()
 
-	for len(src.files) == 0 {
-		if len(src.dirs) == 0 {
-			return nil, luigi.EOS{}
-		}
-
-		err := src.nextDir()
+		dirs, err := root.Readdir(0)
 		if err != nil {
-			return nil, fmt.Errorf("error reading next subdirectory: %w", err)
+			yield(refs.BlobRef{}, fmt.Errorf("error reading blobs directory: %w", err))
+			return
+		}
+
+		for _, d := range dirs {
+			dir, err := os.Open(filepath.Join(basePath, d.Name()))
+			if err != nil {
+				if !yield(refs.BlobRef{}, fmt.Errorf("error opening subdirectory: %w", err)) {
+					return
+				}
+				continue
+			}
+
+			blobs, err := dir.Readdir(0)
+			dir.Close()
+			if err != nil {
+				if !yield(refs.BlobRef{}, fmt.Errorf("error reading blobs subdirectory: %w", err)) {
+					return
+				}
+				continue
+			}
+
+			for _, b := range blobs {
+				hexName := d.Name() + b.Name()
+				raw, err := hex.DecodeString(hexName)
+				if err != nil {
+					if !yield(refs.BlobRef{}, fmt.Errorf("error decoding hex file name %q: %w", hexName, err)) {
+						return
+					}
+					continue
+				}
+
+				ref, err := refs.NewBlobRefFromBytes(raw, refs.RefAlgoBlobSSB1)
+				if err != nil {
+					if !yield(refs.BlobRef{}, err) {
+						return
+					}
+					continue
+				}
+
+				if !yield(ref, nil) {
+					return
+				}
+			}
 		}
 	}
-
-	var file string
-	file, src.files = src.files[0], src.files[1:]
-
-	raw, err := hex.DecodeString(file)
-	if err != nil {
-		return nil, fmt.Errorf("error decoding hex file name %q: %w", file, err)
-	}
-
-	return refs.NewBlobRefFromBytes(raw, refs.RefAlgoBlobSSB1)
 }

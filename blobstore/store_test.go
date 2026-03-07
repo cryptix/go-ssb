@@ -5,7 +5,6 @@
 package blobstore
 
 import (
-	"context"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -16,7 +15,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/ssbc/go-luigi"
 	"github.com/ssbc/go-ssb"
 	"github.com/ssbc/go-ssb/internal/broadcasts"
 )
@@ -144,26 +142,15 @@ func TestStore(t *testing.T) {
 				a.Equal(tc.blobs[refStr], string(data), "blob content mismatch")
 			}
 
-			ctx := context.Background()
-
 			listExp := make(map[string]struct{})
 			for _, refStr := range tc.putRefs {
 				listExp[refStr] = struct{}{}
 			}
 
-			lstSrc := bs.List()
-			for {
-				v, err := lstSrc.Next(ctx)
-				if luigi.IsEOS(err) {
-					break
-				} else {
-					r.NoError(err, "error calling Next on list source")
-				}
+			for ref, err := range bs.List() {
+				r.NoError(err, "error iterating list")
 
-				ref, ok := v.(refs.BlobRef)
-				r.True(ok, "got something that is not a blobref in list: %v(%T)", v, v)
-
-				_, ok = listExp[ref.Sigil()]
+				_, ok := listExp[ref.Sigil()]
 				r.True(ok, "received unexpected ref in list: %s", ref)
 
 				delete(listExp, ref.Sigil())

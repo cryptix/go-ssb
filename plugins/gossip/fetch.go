@@ -5,15 +5,13 @@
 package gossip
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"math/rand"
 	"time"
 
-	"github.com/ssbc/go-muxrpc/v2"
+	"github.com/ssbc/go-muxrpc/v3"
 	"go.mindeco.de/log"
 	"go.mindeco.de/log/level"
 	"golang.org/x/sync/errgroup"
@@ -178,22 +176,11 @@ func (h *LegacyGossip) fetchFeed(
 		return fmt.Errorf("fetchFeed(%s:%d) failed to create source: %w", fr.String(), latestSeq, err)
 	}
 
-	var buf = &bytes.Buffer{}
-	for src.Next(ctx) {
-
-		err = src.Reader(func(r io.Reader) error {
-			_, err = buf.ReadFrom(r)
-			return err
-		})
+	for b := range src.Iter(ctx) {
+		err = snk.Verify(b)
 		if err != nil {
 			return err
 		}
-
-		err = snk.Verify(buf.Bytes())
-		if err != nil {
-			return err
-		}
-		buf.Reset()
 		latestSeq++
 	}
 

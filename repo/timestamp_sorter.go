@@ -5,18 +5,17 @@
 package repo
 
 import (
-	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"io/ioutil"
+	"iter"
 	"os"
 	"path/filepath"
 	"sort"
 	"time"
 
 	bmap "github.com/dgraph-io/sroar"
-	"github.com/ssbc/go-luigi"
 
 	refs "github.com/ssbc/go-ssb-refs"
 )
@@ -37,23 +36,15 @@ func (ts SortedSeqSlice) Swap(i int, j int) {
 	ts[i], ts[j] = ts[j], ts[i]
 }
 
-// AsLuigiSource returns a luigi.Source to iterate over the sorted array.
-// Helpful for retrofitting into existing margaret code.
-func (ts SortedSeqSlice) AsLuigiSource() luigi.Source {
-	return &sortedSource{
-		elems: ts,
+// Iter returns a Go iterator over the sorted sequences.
+func (ts SortedSeqSlice) Iter() iter.Seq[SortedSequence] {
+	return func(yield func(SortedSequence) bool) {
+		for _, s := range ts {
+			if !yield(s) {
+				return
+			}
+		}
 	}
-}
-
-type sortedSource struct{ elems SortedSeqSlice }
-
-func (ss *sortedSource) Next(_ context.Context) (interface{}, error) {
-	if len(ss.elems) == 0 {
-		return nil, luigi.EOS{}
-	}
-	next := ss.elems[0]
-	ss.elems = ss.elems[1:]
-	return next, nil
 }
 
 // SortedAscending wraps around SortedSeqSlice to give it a Less that sorts values from small to large.
