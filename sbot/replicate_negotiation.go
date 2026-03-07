@@ -20,7 +20,8 @@ import (
 type replicateNegotiator struct {
 	logger log.Logger
 
-	lg *gossip.LegacyGossip
+	lg      *gossip.LegacyGossip
+	ebtOnly bool // if true, never fall back to legacy gossip
 
 	ebt *ebt.MUXRPCHandler
 }
@@ -32,7 +33,7 @@ func (rn replicateNegotiator) HandleConnect(ctx context.Context, e muxrpc.Endpoi
 	if !muxrpc.IsServer(e) {
 		// do nothing if we are the server, unless the peer doesn't start ebt
 		started := rn.ebt.Sessions.WaitFor(ctx, remoteAddr, 1*time.Minute)
-		if !started {
+		if !started && !rn.ebtOnly {
 			rn.lg.StartLegacyFetching(ctx, e)
 		}
 		return
@@ -41,7 +42,6 @@ func (rn replicateNegotiator) HandleConnect(ctx context.Context, e muxrpc.Endpoi
 	remote, err := ssb.GetFeedRefFromAddr(remoteAddr)
 	if err != nil {
 		panic(err)
-		return
 	}
 
 	level.Debug(rn.logger).Log("event", "triggering ebt.replicate", "r", remote.ShortSigil())
@@ -53,8 +53,10 @@ func (rn replicateNegotiator) HandleConnect(ctx context.Context, e muxrpc.Endpoi
 	if err != nil {
 		level.Debug(rn.logger).Log("event", "no ebt support", "err", err)
 
-		// fallback to legacy
-		rn.lg.StartLegacyFetching(ctx, e)
+		if !rn.ebtOnly {
+			// fallback to legacy
+			rn.lg.StartLegacyFetching(ctx, e)
+		}
 		return
 	}
 

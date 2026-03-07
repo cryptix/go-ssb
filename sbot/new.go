@@ -92,6 +92,7 @@ type Sbot struct {
 	hopCount uint
 
 	disableEBT                   bool
+	ebtOnly                      bool // EBT-only mode: no legacy gossip fallback
 	disableLegacyLiveReplication bool
 
 	Network *network.Node
@@ -683,7 +684,8 @@ func New(fopts ...Option) (*Sbot, error) {
 		s.ebtHandler = ebtPlug.MUXRPCHandler
 
 		rn := negPlugin{replicateNegotiator{
-			logger: log.With(s.info, "module", "replicate-negotiator"),
+			logger:  log.With(s.info, "module", "replicate-negotiator"),
+			ebtOnly: s.ebtOnly,
 
 			lg:  gossipPlug.LegacyGossip,
 			ebt: ebtPlug.MUXRPCHandler,

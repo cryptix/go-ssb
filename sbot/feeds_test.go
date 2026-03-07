@@ -29,14 +29,36 @@ import (
 	"github.com/ssbc/go-ssb/internal/testutils"
 )
 
+type replicationMode int
+
+const (
+	replModeLegacy  replicationMode = iota
+	replModeEBT                     // EBT with legacy fallback
+	replModeEBTOnly                 // EBT without legacy fallback
+)
+
 // two peers, one publishs a message, they connect, assert the new message is there
 func TestFeedsOneByOne(t *testing.T) {
 	defer leakcheck.Check(t)
-	t.Run("legacy", createFeedsOneByOneTest(false))
-	t.Run("ebt", createFeedsOneByOneTest(true))
+	t.Run("legacy", createFeedsOneByOneTest(replModeLegacy))
+	t.Run("ebt", createFeedsOneByOneTest(replModeEBT))
+	t.Run("ebt-only", createFeedsOneByOneTest(replModeEBTOnly))
 }
 
-func createFeedsOneByOneTest(useEBT bool) func(t *testing.T) {
+func replOpts(mode replicationMode) []Option {
+	switch mode {
+	case replModeLegacy:
+		return []Option{DisableEBT(true)}
+	case replModeEBT:
+		return []Option{DisableEBT(false)}
+	case replModeEBTOnly:
+		return []Option{EBTOnly(true)}
+	default:
+		panic("unknown replication mode")
+	}
+}
+
+func createFeedsOneByOneTest(mode replicationMode) func(t *testing.T) {
 	return func(t *testing.T) {
 		// <boilerplate>
 
@@ -60,6 +82,8 @@ func createFeedsOneByOneTest(useEBT bool) func(t *testing.T) {
 			mainLog = level.NewFilter(mainLog, level.AllowInfo())
 		}
 
+		useEBT := mode != replModeLegacy
+
 		// </boilerplate>
 
 		// create bot 1
@@ -69,7 +93,7 @@ func createFeedsOneByOneTest(useEBT bool) func(t *testing.T) {
 		t.Log("ali is", aliKey.ID().String())
 
 		aliPath := filepath.Join("testrun", t.Name(), "ali")
-		ali, err := New(
+		aliOpts := []Option{
 			WithAppKey(appKey),
 			WithHMACSigning(hmacKey),
 			WithContext(ctx),
@@ -80,8 +104,9 @@ func createFeedsOneByOneTest(useEBT bool) func(t *testing.T) {
 			}),
 			WithRepoPath(aliPath),
 			WithListenAddr(":0"),
-			DisableEBT(!useEBT),
-		)
+		}
+		aliOpts = append(aliOpts, replOpts(mode)...)
+		ali, err := New(aliOpts...)
 		r.NoError(err)
 
 		botgroup.Go(func() error {
@@ -102,7 +127,7 @@ func createFeedsOneByOneTest(useEBT bool) func(t *testing.T) {
 		t.Log("bob is", bobKey.ID().String())
 
 		bobPath := filepath.Join("testrun", t.Name(), "bob")
-		bob, err := New(
+		bobOpts := []Option{
 			WithAppKey(appKey),
 			WithHMACSigning(hmacKey),
 			WithContext(ctx),
@@ -113,8 +138,9 @@ func createFeedsOneByOneTest(useEBT bool) func(t *testing.T) {
 			}),
 			WithRepoPath(filepath.Join("testrun", t.Name(), "bob")),
 			WithListenAddr(":0"),
-			DisableEBT(!useEBT),
-		)
+		}
+		bobOpts = append(bobOpts, replOpts(mode)...)
+		bob, err := New(bobOpts...)
 		r.NoError(err)
 
 		botgroup.Go(func() error {

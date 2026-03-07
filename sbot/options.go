@@ -74,6 +74,18 @@ func DisableEBT(yes bool) Option {
 	}
 }
 
+// EBTOnly enables EBT-only mode where legacy gossip replication is never used as a fallback.
+// Useful for testing pure EBT behavior in isolation.
+func EBTOnly(yes bool) Option {
+	return func(s *Sbot) error {
+		s.ebtOnly = yes
+		if yes {
+			s.disableEBT = false
+		}
+		return nil
+	}
+}
+
 // DisableLegacyLiveReplication controls wether createHistoryStreams are created with live:true flag.
 // This code is functional but might not scale to a lot of feeds. Therefore this flag can be used to force
 // the old non-live polling mode.
