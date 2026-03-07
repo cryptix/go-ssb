@@ -104,10 +104,11 @@ func (wl *WrappedLog) AppendBatchMessages(msgs []refs.Message) ([]int64, error) 
 		mms[i] = &mm
 	}
 
-	// TODO: when margaret supports AppendBatch, use it via type assertion:
-	//   if batcher, ok := wl.Alterable.(margaret.BatchAppender[*MultiMessage]); ok {
-	//       return batcher.AppendBatch(mms)
-	//   }
+	// Use BatchAppender if the underlying log supports it (single lock + single fsync).
+	if batcher, ok := wl.Alterable.(margaret.BatchAppender[*MultiMessage]); ok {
+		return batcher.AppendBatch(mms)
+	}
+	// Fallback: sequential Append calls.
 	seqs := make([]int64, len(mms))
 	for i, mm := range mms {
 		seq, err := wl.Alterable.Append(mm)
