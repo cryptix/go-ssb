@@ -39,6 +39,9 @@ type SubsetOperation struct {
 	// for timestamp filtering
 	timestampGt int64 // messages after this unix timestamp (milliseconds)
 	timestampLt int64 // messages before this unix timestamp (milliseconds)
+
+	// for graph operations (hops distance)
+	hops int
 }
 
 // NewSubsetOpByType returns a single operation which filters messages by type
@@ -97,6 +100,36 @@ func NewSubsetOpHasRoot(root refs.MessageRef) SubsetOperation {
 // Both gt and lt are unix timestamps in milliseconds. Use 0 to leave a bound open.
 func NewSubsetOpByTimestamp(gt, lt int64) SubsetOperation {
 	return SubsetOperation{operation: "timestamp", timestampGt: gt, timestampLt: lt}
+}
+
+// --- Graph-aware operations ---
+// These operations integrate with the social follow/block graph to filter
+// messages based on trust relationships. They resolve a set of feeds from
+// the graph and return the union of their message bitmaps.
+
+// NewSubsetOpFollowedBy returns messages authored by feeds that the given feed follows.
+// This is the core building block for "my timeline" queries.
+func NewSubsetOpFollowedBy(who refs.FeedRef) SubsetOperation {
+	return SubsetOperation{operation: "followedBy", feed: &who}
+}
+
+// NewSubsetOpBlockedBy returns messages authored by feeds that the given feed blocks.
+// Typically used inside a NOT() for exclusion: not(blockedBy(me))
+func NewSubsetOpBlockedBy(who refs.FeedRef) SubsetOperation {
+	return SubsetOperation{operation: "blockedBy", feed: &who}
+}
+
+// NewSubsetOpInHops returns messages authored by feeds within N hops of the given feed.
+// Hops 0 = direct follows, 1 = friends of friends (requires mutual follow), etc.
+func NewSubsetOpInHops(who refs.FeedRef, hops int) SubsetOperation {
+	return SubsetOperation{operation: "hops", feed: &who, hops: hops}
+}
+
+// NewSubsetOpFriendsBlocks returns messages authored by feeds blocked by any
+// friend of the given feed. Used for social content moderation:
+// not(friendsBlocks(me)) filters out content that your friends have blocked.
+func NewSubsetOpFriendsBlocks(who refs.FeedRef) SubsetOperation {
+	return SubsetOperation{operation: "friendsBlocks", feed: &who}
 }
 
 // NewSubsetOpByAuthors is a convenience builder that creates an OR combination
@@ -172,6 +205,7 @@ func (so SubsetOperation) MarshalJSON() ([]byte, error) {
 	m.Ref = so.ref
 	m.TimestampGt = so.timestampGt
 	m.TimestampLt = so.timestampLt
+	m.Hops = so.hops
 
 	return json.Marshal(m)
 }
@@ -233,6 +267,17 @@ func (so *SubsetOperation) UnmarshalJSON(input []byte) error {
 	case "timestamp":
 		so.timestampGt = m.TimestampGt
 		so.timestampLt = m.TimestampLt
+	case "followedBy", "blockedBy", "friendsBlocks":
+		if m.Feed == nil {
+			return fmt.Errorf("subset: %s requires a feed", m.Operation)
+		}
+		so.feed = m.Feed
+	case "hops":
+		if m.Feed == nil {
+			return fmt.Errorf("subset: hops requires a feed")
+		}
+		so.feed = m.Feed
+		so.hops = m.Hops
 	default:
 		return fmt.Errorf("unhandled subset operation: %q", m.Operation)
 	}
@@ -256,4 +301,5 @@ type subsetOperationJSONMarshaler struct {
 	Ref         string `json:"ref,omitempty"`
 	TimestampGt int64  `json:"gt,omitempty"`
 	TimestampLt int64  `json:"lt,omitempty"`
+	Hops        int    `json:"hops,omitempty"`
 }

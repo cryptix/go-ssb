@@ -283,7 +283,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 	// wait for indexes to catch up, since the tests rely on them being up-to-date to be able to ask for messages by author or type
 	mainbot.WaitUntilIndexesAreSynced()
 
-	sp := query.NewSubsetPlanerFull(mainbot.Users, mainbot.ByType, mainbot.Tangles, mainbot.Channels, mainbot.Mentions, mainbot.ReceiveLog)
+	sp := query.NewSubsetPlanerFull(mainbot.Users, mainbot.ByType, mainbot.Tangles, mainbot.Channels, mainbot.Mentions, mainbot.ReceiveLog, mainbot.GraphBuilder)
 
 	t.Run("by author", func(t *testing.T) {
 		r := require.New(t)
@@ -526,6 +526,68 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		r.Len(res, 1, "cloe's ssb-dev message (10)")
+	})
+
+	// graph-aware query tests
+	// The contact messages establish: arny follows bert (msg 1), bert follows arny (msg 3)
+
+	t.Run("followedBy arny", func(t *testing.T) {
+		r := require.New(t)
+
+		// arny follows bert, so followedBy(arny) = bert's messages
+		qry := query.NewSubsetOpFollowedBy(kpArny.ID())
+		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		r.NoError(err)
+		// bert has messages: 2(about), 3(contact), 4(about), 9(post) = 4 messages
+		r.Len(res, 4, "bert's messages (followed by arny)")
+	})
+
+	t.Run("followedBy bert", func(t *testing.T) {
+		r := require.New(t)
+
+		// bert follows arny, so followedBy(bert) = arny's messages
+		qry := query.NewSubsetOpFollowedBy(kpBert.ID())
+		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		r.NoError(err)
+		// arny has messages: 0(about), 1(contact), 8(post) = 3 messages
+		r.Len(res, 3, "arny's messages (followed by bert)")
+	})
+
+	t.Run("followedBy AND type post (timeline)", func(t *testing.T) {
+		r := require.New(t)
+
+		// arny's timeline: posts by people arny follows (bert)
+		qry := query.NewSubsetAndCombination(
+			query.NewSubsetOpFollowedBy(kpArny.ID()),
+			query.NewSubsetOpByType("post"),
+		)
+		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		r.NoError(err)
+		// bert's posts: 9 = 1 post
+		r.Len(res, 1, "bert's posts (arny's timeline)")
+	})
+
+	t.Run("NOT blockedBy (content moderation)", func(t *testing.T) {
+		r := require.New(t)
+
+		// nobody has blocked anyone in our test data, so blockedBy returns empty
+		// NOT(empty) = everything
+		qry := query.NewSubsetNotCombination(
+			query.NewSubsetOpBlockedBy(kpArny.ID()),
+		)
+		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		r.NoError(err)
+		r.Len(res, 11, "no one is blocked, so all 11 messages returned")
+	})
+
+	t.Run("friendsBlocks (empty case)", func(t *testing.T) {
+		r := require.New(t)
+
+		// arny's friends (bert) haven't blocked anyone
+		qry := query.NewSubsetOpFriendsBlocks(kpArny.ID())
+		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		r.NoError(err)
+		r.Nil(res, "no friends blocks means nil result")
 	})
 
 	// shutdown bot

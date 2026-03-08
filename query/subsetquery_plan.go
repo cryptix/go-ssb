@@ -10,6 +10,8 @@ import (
 	"github.com/dgraph-io/sroar"
 	refs "github.com/ssbc/go-ssb-refs"
 
+	"github.com/ssbc/go-ssb"
+	"github.com/ssbc/go-ssb/graph"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
 	"github.com/ssbc/go-ssb/message/multimsg"
 	margaret "github.com/ssbc/margaret/v2"
@@ -26,6 +28,10 @@ type SubsetPlaner struct {
 	// rxLog is needed for NOT operations (to compute the universe bitmap)
 	// and for timestamp filtering
 	rxLog margaret.Log[*multimsg.MultiMessage]
+
+	// graphBuilder provides access to the social follow/block graph
+	// for graph-aware query operations (followedBy, blockedBy, hops, friendsBlocks)
+	graphBuilder graph.Builder
 }
 
 // NewSubsetPlaner creates a new SubsetPlaner with author and type indexes.
@@ -51,14 +57,16 @@ func NewSubsetPlanerFull(
 	authors, bytype, tangles *roaring.MultiLog,
 	channels, mentions *roaring.MultiLog,
 	rxLog margaret.Log[*multimsg.MultiMessage],
+	gb graph.Builder,
 ) *SubsetPlaner {
 	return &SubsetPlaner{
-		authors:  authors,
-		bytype:   bytype,
-		tangles:  tangles,
-		channels: channels,
-		mentions: mentions,
-		rxLog:    rxLog,
+		authors:      authors,
+		bytype:       bytype,
+		tangles:      tangles,
+		channels:     channels,
+		mentions:     mentions,
+		rxLog:        rxLog,
+		graphBuilder: gb,
 	}
 }
 
@@ -107,6 +115,29 @@ func (sp *SubsetPlaner) universeMaxSeq() int64 {
 		return sp.rxLog.Seq()
 	}
 	return -1
+}
+
+// feedSetToBitmap converts a set of feeds into a combined bitmap by ORing
+// each feed's author bitmap together. This is the bridge between graph queries
+// (which return sets of feeds) and bitmap queries (which return message sets).
+func feedSetToBitmap(sp *SubsetPlaner, feeds *ssb.StrFeedSet) (*sroar.Bitmap, error) {
+	lst, err := feeds.List()
+	if err != nil {
+		return nil, fmt.Errorf("feedSetToBitmap: failed to list feeds: %w", err)
+	}
+	if len(lst) == 0 {
+		return nil, nil
+	}
+	result := sroar.NewBitmap()
+	for _, f := range lst {
+		bm, err := sp.authors.LoadInternalBitmap(storedrefs.Feed(f))
+		if err != nil {
+			// feed might not have any messages in our log, skip it
+			continue
+		}
+		result.Or(bm)
+	}
+	return result, nil
 }
 
 func combineBitmaps(sp *SubsetPlaner, qry SubsetOperation) (*sroar.Bitmap, error) {
@@ -213,6 +244,66 @@ func combineBitmaps(sp *SubsetPlaner, qry SubsetOperation) (*sroar.Bitmap, error
 		}
 		universe.AndNot(childBitmap)
 		return universe, nil
+
+	case "followedBy":
+		if sp.graphBuilder == nil {
+			return nil, fmt.Errorf("sbot: followedBy queries require a graph builder")
+		}
+		follows, err := sp.graphBuilder.Follows(*qry.feed)
+		if err != nil {
+			return nil, fmt.Errorf("followedBy: failed to get follows: %w", err)
+		}
+		return feedSetToBitmap(sp, follows)
+
+	case "blockedBy":
+		if sp.graphBuilder == nil {
+			return nil, fmt.Errorf("sbot: blockedBy queries require a graph builder")
+		}
+		g, err := sp.graphBuilder.Build()
+		if err != nil {
+			return nil, fmt.Errorf("blockedBy: failed to build graph: %w", err)
+		}
+		blocked := g.BlockedList(*qry.feed)
+		return feedSetToBitmap(sp, blocked)
+
+	case "hops":
+		if sp.graphBuilder == nil {
+			return nil, fmt.Errorf("sbot: hops queries require a graph builder")
+		}
+		hopSet := sp.graphBuilder.Hops(*qry.feed, qry.hops)
+		return feedSetToBitmap(sp, hopSet)
+
+	case "friendsBlocks":
+		if sp.graphBuilder == nil {
+			return nil, fmt.Errorf("sbot: friendsBlocks queries require a graph builder")
+		}
+		// Get the feeds that "who" follows
+		follows, err := sp.graphBuilder.Follows(*qry.feed)
+		if err != nil {
+			return nil, fmt.Errorf("friendsBlocks: failed to get follows: %w", err)
+		}
+		friends, err := follows.List()
+		if err != nil {
+			return nil, fmt.Errorf("friendsBlocks: failed to list follows: %w", err)
+		}
+		// Build the graph once for all block lookups
+		g, err := sp.graphBuilder.Build()
+		if err != nil {
+			return nil, fmt.Errorf("friendsBlocks: failed to build graph: %w", err)
+		}
+		// Collect all feeds blocked by any friend
+		allBlocked := ssb.NewFeedSet(0)
+		for _, friend := range friends {
+			blocked := g.BlockedList(friend)
+			blockedList, err := blocked.List()
+			if err != nil {
+				continue
+			}
+			for _, b := range blockedList {
+				allBlocked.AddRef(b)
+			}
+		}
+		return feedSetToBitmap(sp, allBlocked)
 
 	case "or", "and":
 		if len(qry.args) == 0 {

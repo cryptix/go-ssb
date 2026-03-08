@@ -721,7 +721,8 @@ func New(fopts ...Option) (*Sbot, error) {
 		s.Tangles,
 		s.Channels,
 		s.Mentions,
-		s.ReceiveLog, s)
+		s.ReceiveLog, s,
+		s.GraphBuilder)
 	s.public.Register(plug)
 	s.master.Register(plug)
 
