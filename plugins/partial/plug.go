@@ -45,6 +45,7 @@ func New(log logging.Interface,
 	rxlog margaret.Log[*multimsg.MultiMessage],
 	get ssb.Getter,
 	gb graph.Builder,
+	search query.Searcher, // may be nil
 ) ssb.Plugin {
 	rootHdlr := typemux.New(log)
 
@@ -54,8 +55,13 @@ func New(log logging.Interface,
 		rxlog: rxlog,
 	})
 
+	qp := query.NewSubsetPlanerFull(feeds, bytype, roots, channels, mentions, rxlog, gb)
+	if search != nil {
+		qp = qp.WithSearch(search)
+	}
+
 	rootHdlr.RegisterSource(muxrpc.Method{name, "getSubset"}, getSubsetHandler{
-		queryPlaner: query.NewSubsetPlanerFull(feeds, bytype, roots, channels, mentions, rxlog, gb),
+		queryPlaner: qp,
 		rxLog:       rxlog,
 	})
 

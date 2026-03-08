@@ -19,6 +19,11 @@ import (
 	"github.com/ssbc/margaret/v2/multilog/roaring"
 )
 
+// Searcher is implemented by full-text search indexes that return results as bitmaps.
+type Searcher interface {
+	Search(query string, limit int) (*sroar.Bitmap, error)
+}
+
 type SubsetPlaner struct {
 	authors, bytype *roaring.MultiLog
 	tangles         *roaring.MultiLog
@@ -32,6 +37,7 @@ type SubsetPlaner struct {
 	// graphBuilder provides access to the social follow/block graph
 	// for graph-aware query operations (followedBy, blockedBy, hops, friendsBlocks)
 	graphBuilder graph.Builder
+	search          Searcher // optional, may be nil
 }
 
 // NewSubsetPlaner creates a new SubsetPlaner with author and type indexes.
@@ -68,6 +74,12 @@ func NewSubsetPlanerFull(
 		rxLog:        rxLog,
 		graphBuilder: gb,
 	}
+}
+
+// WithSearch returns the planer configured with a full-text search index.
+func (sp *SubsetPlaner) WithSearch(s Searcher) *SubsetPlaner {
+	sp.search = s
+	return sp
 }
 
 // QuerySubsetBitmap evaluates the passed SubsetOperation and returns a bitmap which maps to messages in the receive log.
@@ -304,6 +316,12 @@ func combineBitmaps(sp *SubsetPlaner, qry SubsetOperation) (*sroar.Bitmap, error
 			}
 		}
 		return feedSetToBitmap(sp, allBlocked)
+
+	case "search":
+		if sp.search == nil {
+			return nil, fmt.Errorf("sbot: search index not configured")
+		}
+		return sp.search.Search(qry.string, 1000)
 
 	case "or", "and":
 		if len(qry.args) == 0 {

@@ -60,6 +60,14 @@ func SkipConsistencyCheck() Option {
 	}
 }
 
+// EnableSearch enables full-text search indexing using Bleve.
+func EnableSearch() Option {
+	return func(s *Sbot) error {
+		s.enableSearch = true
+		return nil
+	}
+}
+
 // WithRepoPath changes where the replication database and blobs are stored.
 func WithRepoPath(path string) Option {
 	return func(s *Sbot) error {
