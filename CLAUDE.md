@@ -104,10 +104,27 @@ Message Arrives (network RPC / local publish)
 | `multilogs/userfeeds.go` | User feeds multilog setup |
 | `indexes/get.go` | Message ref → sequence lookup |
 | `repo/badger_index.go` | BadgerIndex / BadgerSeqIndex implementations |
-| `query/subsetquery.go` | Subset query AST |
-| `query/subsetquery_plan.go` | Bitmap query execution |
+| `query/subsetquery.go` | Subset query AST (type, author, search, and, or) |
+| `query/subsetquery_plan.go` | Bitmap query execution + Searcher interface |
 | `graph/builder.go` | Trust graph construction |
 | `plugins2/names/about.go` | About/profile indexing |
+| `multilogs/search_index.go` | Bleve full-text search index |
+
+### Full-Text Search (Bleve)
+
+Enabled via `sbot.EnableSearch()` option. The `SearchIndex` in `multilogs/search_index.go`:
+- Indexes `post` (text, channel) and `about` (name, description) messages
+- Uses Bleve with scorch backend, stored at `.ssb-go/sublogs/search/`
+- Follows the same `LogIndexer` pattern as `CombinedIndex` (incremental, batch processing)
+- `Search(query, limit)` returns `*sroar.Bitmap` of matching receive log sequences
+- Integrates with `SubsetPlaner` via `query.Searcher` interface
+- Composable: `{"op":"and","args":[{"op":"search","string":"hello"},{"op":"type","string":"post"}]}`
+- Skips encrypted messages (only indexes cleartext)
+- Document IDs are stringified receive log sequence numbers
+
+### Dependencies Note
+
+`margaret/v2` and `go-muxrpc/v3` are unpublished v2/v3 modules available as branches on GitHub (`ssbc/margaret` branch `v2`, `ssbc/go-muxrpc` branch `v3`). The go.mod uses pseudo-versions pointing to these branch tips. After adding bleve, run `go mod tidy` with Go 1.25+ to update go.sum.
 
 ---
 
