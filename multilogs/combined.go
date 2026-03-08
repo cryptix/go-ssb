@@ -220,6 +220,62 @@ func (idx *CombinedIndex) ProcessEntry(seq int64, mm *multimsg.MultiMessage) err
 	return nil
 }
 
+// IndexEntry is a single entry for batch processing.
+type IndexEntry struct {
+	Seq int64
+	MM  *multimsg.MultiMessage
+}
+
+// ProcessBatch processes multiple log entries under a single lock acquisition.
+// persist.Save and ebtState.Fill are called once for the whole batch.
+func (idx *CombinedIndex) ProcessBatch(entries []IndexEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+
+	idx.l.Lock()
+	defer idx.l.Unlock()
+
+	var lastSeq int64
+	ebtUpdates := make([]statematrix.ObservedFeed, 0, len(entries))
+
+	for _, e := range entries {
+		lastSeq = e.Seq
+
+		if e.MM.Message == nil {
+			continue // nulled entry
+		}
+
+		if err := idx.updateSublogs(e.Seq, e.MM); err != nil {
+			return err
+		}
+
+		msg := e.MM.Message
+		ebtUpdates = append(ebtUpdates, statematrix.ObservedFeed{
+			Feed: msg.Author(),
+			Note: ssb.Note{
+				Seq:       int64(msg.Seq()),
+				Receive:   true,
+				Replicate: true,
+			},
+		})
+	}
+
+	// Single state file persist for the whole batch
+	if err := persist.Save(idx.file, lastSeq); err != nil {
+		return fmt.Errorf("error saving current sequence number: %w", err)
+	}
+
+	// Single EBT state update for the whole batch
+	if len(ebtUpdates) > 0 {
+		if err := idx.ebtState.Fill(idx.self, ebtUpdates); err != nil {
+			return fmt.Errorf("ebt batch update failed: %w", err)
+		}
+	}
+
+	return nil
+}
+
 // LastProcessedSeq returns the sequence number of the last processed message.
 // This returns the in-memory value, which may be ahead of what's persisted on disk.
 func (idx *CombinedIndex) LastProcessedSeq() int64 {
@@ -227,6 +283,8 @@ func (idx *CombinedIndex) LastProcessedSeq() int64 {
 	defer idx.l.Unlock()
 	return idx.latestSeq
 }
+
+const indexBatchSize = 128
 
 // Index processes all unprocessed entries from the given log.
 func (idx *CombinedIndex) Index(log margaret.Log[*multimsg.MultiMessage]) error {
@@ -239,8 +297,19 @@ func (idx *CombinedIndex) Index(log margaret.Log[*multimsg.MultiMessage]) error 
 
 	var count int
 	qry := log.Query(opts...)
+	batch := make([]IndexEntry, 0, indexBatchSize)
 	for seq, mm := range qry.Iter() {
-		if err := idx.ProcessEntry(seq, mm); err != nil {
+		batch = append(batch, IndexEntry{Seq: seq, MM: mm})
+		if len(batch) >= indexBatchSize {
+			if err := idx.ProcessBatch(batch); err != nil {
+				return err
+			}
+			batch = batch[:0]
+		}
+	}
+	// flush remainder
+	if len(batch) > 0 {
+		if err := idx.ProcessBatch(batch); err != nil {
 			return err
 		}
 		if idx.onEntry != nil {
@@ -377,8 +446,32 @@ func (idx *CombinedIndex) VerifyConsistency(rxlog margaret.Log[*multimsg.MultiMe
 	return true, nil
 }
 
-// update all the indexes with this new message which was stored as rxSeq
+// update all the indexes with this new message which was stored as rxSeq.
+// Calls updateSublogs and then updates the EBT state.
 func (idx *CombinedIndex) update(rxSeq int64, mm *multimsg.MultiMessage) error {
+	if err := idx.updateSublogs(rxSeq, mm); err != nil {
+		return err
+	}
+
+	msg := mm.Message
+	err := idx.ebtState.Fill(idx.self, []statematrix.ObservedFeed{{
+		Feed: msg.Author(),
+		Note: ssb.Note{
+			Seq:       int64(msg.Seq()),
+			Receive:   true,
+			Replicate: true,
+		},
+	}})
+	if err != nil {
+		return fmt.Errorf("ebt update failed: %w", err)
+	}
+
+	return nil
+}
+
+// updateSublogs updates all sublogs (users, byType, tangles, private) but
+// does NOT update the EBT state. This allows callers to batch EBT updates.
+func (idx *CombinedIndex) updateSublogs(rxSeq int64, mm *multimsg.MultiMessage) error {
 	msg := mm.Message
 
 	author := msg.Author()
@@ -391,19 +484,6 @@ func (idx *CombinedIndex) update(rxSeq int64, mm *multimsg.MultiMessage) error {
 
 	if err := appendSeq(authorLog, rxSeq); err != nil {
 		return fmt.Errorf("error updating author sublog: %w", err)
-	}
-
-	// TODO: batch/debounce me
-	err = idx.ebtState.Fill(idx.self, []statematrix.ObservedFeed{{
-		Feed: author,
-		Note: ssb.Note{
-			Seq:       int64(msg.Seq()),
-			Receive:   true,
-			Replicate: true,
-		},
-	}})
-	if err != nil {
-		return fmt.Errorf("ebt update failed: %w", err)
 	}
 
 	// decrypt box 1 & 2

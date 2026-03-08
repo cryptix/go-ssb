@@ -39,6 +39,16 @@ func (ms MargaretSaver) Save(msg refs.Message) error {
 	return err
 }
 
+func (ms MargaretSaver) SaveBatch(msgs []refs.Message) ([]int64, error) {
+	return ms.WrappedLog.AppendBatchMessages(msgs)
+}
+
+// BatchSaveMessager extends SaveMessager with batch support.
+type BatchSaveMessager interface {
+	SaveMessager
+	SaveBatch([]refs.Message) ([]int64, error)
+}
+
 // mapping an author ref to a verifySink
 type verifyFanIn map[string]SequencedVerificationSink
 
@@ -80,6 +90,23 @@ func (vs *VerificationRouter) GetSink(ref refs.FeedRef, complete bool) (Sequence
 
 	vs.sinks[ref.String()] = snk
 	return snk, nil
+}
+
+// SaveBatch saves a batch of verified messages to the rxlog.
+// Returns the sequence numbers assigned to each message.
+func (vs *VerificationRouter) SaveBatch(msgs []refs.Message) ([]int64, error) {
+	if batcher, ok := vs.saver.(BatchSaveMessager); ok {
+		return batcher.SaveBatch(msgs)
+	}
+	// Fallback: save one at a time
+	seqs := make([]int64, len(msgs))
+	for i, msg := range msgs {
+		if err := vs.saver.Save(msg); err != nil {
+			return seqs[:i], err
+		}
+		seqs[i] = int64(msg.Seq()) // approximate; real seq comes from the log
+	}
+	return seqs, nil
 }
 
 func (vs *VerificationRouter) CloseSink(ref refs.FeedRef) {
