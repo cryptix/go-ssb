@@ -461,11 +461,9 @@ func New(fopts ...Option) (*Sbot, error) {
 	}
 	*/
 
-	// contact/follow graph
-	graphStore, err := graph.NewBBoltGraphStore(s.boltDB)
-	if err != nil {
-		return nil, fmt.Errorf("sbot: failed to create graph store: %w", err)
-	}
+	// contact/follow graph — uses shared badger to avoid bbolt contention
+	// with tangles/mentions multilogs that also use s.boltDB
+	graphStore := graph.NewBadgerGraphStore(s.indexStore)
 	gb := graph.NewBuilder(log.With(s.info, "module", "graph"), graphStore, s.signHMACsecret)
 	contactsIdx := gb.OpenContactsIndex()
 

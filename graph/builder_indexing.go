@@ -56,6 +56,15 @@ type graphLogIndexer struct {
 	seqKey  []byte
 	builder *GraphBuilder
 	update  func(seq int64, msg refs.Message) error
+
+	// onEntry is called for each processed entry during Index(), if set.
+	// Used by serveIndex to report progress.
+	onEntry func()
+}
+
+// SetOnEntry sets a callback that is invoked for each entry processed by Index().
+func (gi *graphLogIndexer) SetOnEntry(fn func()) {
+	gi.onEntry = fn
 }
 
 func (gi *graphLogIndexer) lastProcessedSeq() int64 {
@@ -87,6 +96,10 @@ func (gi *graphLogIndexer) Index(log margaret.Log[*multimsg.MultiMessage]) error
 			return err
 		}
 		gi.setLastProcessedSeq(seq)
+
+		if gi.onEntry != nil {
+			gi.onEntry()
+		}
 	}
 	return qry.Err()
 }

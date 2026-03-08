@@ -297,7 +297,7 @@ func (idx *CombinedIndex) Index(log margaret.Log[*multimsg.MultiMessage]) error 
 		opts = append(opts, margaret.Gt(lastSeq))
 	}
 
-	var count int
+	var batchCount int
 	qry := log.Query(opts...)
 	batch := make([]IndexEntry, 0, indexBatchSize)
 	for seq, mm := range qry.Iter() {
@@ -307,6 +307,23 @@ func (idx *CombinedIndex) Index(log margaret.Log[*multimsg.MultiMessage]) error 
 				return err
 			}
 			batch = batch[:0]
+			batchCount++
+
+			if idx.onEntry != nil {
+				idx.onEntry()
+			}
+
+			// Periodically flush the roaring bitmaps AND persist state during
+			// bulk re-indexing. State is only saved AFTER flush, so the state
+			// file can never reference bitmap data that isn't on disk yet.
+			if batchCount%1000 == 0 {
+				if err := idx.users.Flush(); err != nil {
+					return fmt.Errorf("error flushing user feeds during index: %w", err)
+				}
+				if err := persist.Save(idx.file, idx.latestSeq); err != nil {
+					return fmt.Errorf("error saving state after flush: %w", err)
+				}
+			}
 		}
 	}
 	// flush remainder
@@ -314,24 +331,13 @@ func (idx *CombinedIndex) Index(log margaret.Log[*multimsg.MultiMessage]) error 
 		if err := idx.ProcessBatch(batch); err != nil {
 			return err
 		}
+		batchCount++
 		if idx.onEntry != nil {
 			idx.onEntry()
 		}
-		count++
-		// Periodically flush the roaring bitmaps AND persist state during
-		// bulk re-indexing. State is only saved AFTER flush, so the state
-		// file can never reference bitmap data that isn't on disk yet.
-		if count%1000 == 0 {
-			if err := idx.users.Flush(); err != nil {
-				return fmt.Errorf("error flushing user feeds during index: %w", err)
-			}
-			if err := persist.Save(idx.file, idx.latestSeq); err != nil {
-				return fmt.Errorf("error saving state after flush: %w", err)
-			}
-		}
 	}
 	// Final flush + state save after processing all entries.
-	if count > 0 {
+	if batchCount > 0 {
 		if err := idx.users.Flush(); err != nil {
 			return fmt.Errorf("error flushing user feeds after index: %w", err)
 		}
@@ -358,6 +364,28 @@ func (idx *CombinedIndex) VerifyConsistency(rxlog margaret.Log[*multimsg.MultiMe
 
 	if idx.latestSeq < 0 {
 		return false, nil // empty or not initialized, nothing to verify
+	}
+
+	// Quick sanity check: if the combined index has processed messages but a
+	// non-optional multilog is completely empty, the storage backend likely
+	// changed (e.g. fs → bbolt) and the index must be rebuilt from scratch.
+	for _, ml := range []*roaring.MultiLog{idx.byType, idx.tangles} {
+		addrs, err := ml.List()
+		if err != nil {
+			return false, fmt.Errorf("consistency: failed to list multilog: %w", err)
+		}
+		if len(addrs) == 0 {
+			// This multilog should have data if we've processed any messages.
+			// Force a full re-index by falling through to the rewind path.
+			prevSeq := idx.latestSeq
+			idx.latestSeq = margaret.SeqEmpty
+			if err := persist.Save(idx.file, idx.latestSeq); err != nil {
+				return false, fmt.Errorf("consistency: failed to rewind state: %w", err)
+			}
+			fmt.Printf("combined-index: multilog is empty but state was at seq %d, forcing full re-index (likely storage backend change)\n",
+				prevSeq)
+			return true, nil
+		}
 	}
 
 	// List all known feeds and check each one
