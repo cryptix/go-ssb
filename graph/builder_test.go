@@ -15,6 +15,7 @@ import (
 	roaringfs "github.com/ssbc/margaret/v2/multilog/roaring/fs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	bolt "go.etcd.io/bbolt"
 
 	"github.com/ssbc/go-ssb"
 	"github.com/ssbc/go-ssb/internal/testutils"
@@ -38,10 +39,6 @@ func makeBadger(t *testing.T) testStore {
 	// Create user feeds multilog
 	uf := roaringfs.NewMultiLog(filepath.Join(tRepoPath, "userFeeds"))
 
-	var builder *BadgerBuilder
-
-	var tc testStore
-
 	pth := tRepo.GetPath("contacts", "db")
 	err = os.MkdirAll(pth, 0700)
 	r.NoError(err, "error making index directory")
@@ -50,12 +47,14 @@ func makeBadger(t *testing.T) testStore {
 	badgerDB, err := badger.Open(badgerOpts)
 	r.NoError(err, "db/idx: badger failed to open")
 
-	builder = NewBuilder(info, badgerDB, nil)
+	store := NewBadgerGraphStore(badgerDB)
+	builder := NewBuilder(info, store, nil)
 
 	contactsIdx := builder.OpenContactsIndex()
 	metafeedsIdx := builder.OpenMetafeedsIndex()
 	announcementIdx := builder.OpenAnnouncementIndex()
 
+	var tc testStore
 	tc.root = tRootLog
 	tc.gbuilder = builder
 	tc.userLogs = uf
@@ -73,8 +72,59 @@ func makeBadger(t *testing.T) testStore {
 	return tc
 }
 
+func makeBBolt(t *testing.T) testStore {
+	r := require.New(t)
+	info := testutils.NewRelativeTimeLogger(nil)
+
+	tRepoPath := filepath.Join("testrun", t.Name())
+	os.RemoveAll(tRepoPath)
+	os.MkdirAll(tRepoPath, 0700)
+
+	tRepo := repo.New(tRepoPath)
+	tRootLog, err := repo.OpenLog(tRepo)
+	r.NoError(err)
+
+	// Create user feeds multilog
+	uf := roaringfs.NewMultiLog(filepath.Join(tRepoPath, "userFeeds"))
+
+	boltPath := filepath.Join(tRepoPath, "graph.bolt")
+	boltDB, err := bolt.Open(boltPath, 0600, bolt.DefaultOptions)
+	r.NoError(err, "failed to open bbolt")
+
+	store, err := NewBBoltGraphStore(boltDB)
+	r.NoError(err, "failed to create bbolt graph store")
+
+	builder := NewBuilder(info, store, nil)
+
+	contactsIdx := builder.OpenContactsIndex()
+	metafeedsIdx := builder.OpenMetafeedsIndex()
+	announcementIdx := builder.OpenAnnouncementIndex()
+
+	var tc testStore
+	tc.root = tRootLog
+	tc.gbuilder = builder
+	tc.userLogs = uf
+	tc.indexers = []testLogIndexer{contactsIdx, metafeedsIdx, announcementIdx}
+
+	t.Cleanup(func() {
+		r.NoError(uf.Close())
+		r.NoError(contactsIdx.Close())
+		r.NoError(metafeedsIdx.Close())
+		r.NoError(announcementIdx.Close())
+		r.NoError(boltDB.Close())
+		r.NoError(tRootLog.Close())
+		t.Log("closed scenario")
+	})
+	return tc
+}
+
 func TestBadger(t *testing.T) {
 	tc := makeBadger(t)
+	t.Run("scene1", tc.theScenario)
+}
+
+func TestBBolt(t *testing.T) {
+	tc := makeBBolt(t)
 	t.Run("scene1", tc.theScenario)
 }
 

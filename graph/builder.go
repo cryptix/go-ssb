@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/dgraph-io/badger/v3"
 	"github.com/ssbc/margaret/v2/multilog"
 	"go.mindeco.de/log"
 	"go.mindeco.de/log/level"
@@ -42,9 +41,15 @@ type Builder interface {
 	DeleteAuthor(who refs.FeedRef) error
 }
 
-// BadgerBuilder can construct a graph from the badger key-value database it was initialized with.
-type BadgerBuilder struct {
-	kv *badger.DB
+// dbKeyPrefix is still used by BadgerGraphStore to namespace keys in a shared BadgerDB.
+var (
+	dbKeyPrefix    = []byte("trust-graph")
+	dbKeyPrefixLen = len(dbKeyPrefix)
+)
+
+// GraphBuilder implements the Builder interface using a pluggable GraphStore backend.
+type GraphBuilder struct {
+	store GraphStore
 
 	idxInSync sync.WaitGroup
 
@@ -56,16 +61,14 @@ type BadgerBuilder struct {
 	hmacSecret *[32]byte
 }
 
-var (
-	dbKeyPrefix    = []byte("trust-graph")
-	dbKeyPrefixLen = len(dbKeyPrefix)
-)
+// BadgerBuilder is an alias for GraphBuilder for backwards compatibility.
+type BadgerBuilder = GraphBuilder
 
-// NewBuilder creates a Builder that is backed by a badger database
-func NewBuilder(log log.Logger, db *badger.DB, hmacSecret *[32]byte) *BadgerBuilder {
-	b := &BadgerBuilder{
-		kv:  db,
-		log: log,
+// NewBuilder creates a Builder backed by the given GraphStore.
+func NewBuilder(log log.Logger, store GraphStore, hmacSecret *[32]byte) *GraphBuilder {
+	b := &GraphBuilder{
+		store: store,
+		log:   log,
 
 		hmacSecret: hmacSecret,
 	}
@@ -77,45 +80,26 @@ func NewBuilder(log log.Logger, db *badger.DB, hmacSecret *[32]byte) *BadgerBuil
 	return b
 }
 
-// setRelation stores a contact/metafeed relationship state in badger.
-func (b *BadgerBuilder) setRelation(addr multilog.Addr, state idxRelationState) error {
-	key := append(append([]byte(nil), dbKeyPrefix...), []byte(addr)...)
-	return b.kv.Update(func(txn *badger.Txn) error {
-		return txn.Set(key, []byte{byte('0' + state)})
-	})
+// setRelation stores a contact/metafeed relationship state.
+func (b *GraphBuilder) setRelation(addr multilog.Addr, state idxRelationState) error {
+	return b.store.SetRelation([]byte(addr), []byte{byte('0' + state)})
 }
 
-// setAnnouncement stores a metafeed announcement (raw TFK bytes) in badger.
-func (b *BadgerBuilder) setAnnouncement(addr multilog.Addr, tfkFeed []byte) error {
-	key := append(append([]byte(nil), dbKeyPrefix...), []byte(addr)...)
-	return b.kv.Update(func(txn *badger.Txn) error {
-		return txn.Set(key, tfkFeed)
-	})
+// setAnnouncement stores a metafeed announcement (raw TFK bytes).
+func (b *GraphBuilder) setAnnouncement(addr multilog.Addr, tfkFeed []byte) error {
+	return b.store.SetRelation([]byte(addr), tfkFeed)
 }
 
-func (b *BadgerBuilder) DeleteAuthor(who refs.FeedRef) error {
+func (b *GraphBuilder) DeleteAuthor(who refs.FeedRef) error {
 	b.WaitUntilIndexesAreSynced()
 	b.cacheLock.Lock()
 	defer b.cacheLock.Unlock()
 	b.cachedGraph = nil
-	return b.kv.Update(func(txn *badger.Txn) error {
-		iter := txn.NewIterator(badger.DefaultIteratorOptions)
-		defer iter.Close()
-
-		prefix := append(dbKeyPrefix, []byte(storedrefs.Feed(who))...)
-		for iter.Seek(prefix); iter.ValidForPrefix(prefix); iter.Next() {
-			it := iter.Item()
-
-			k := it.Key()
-			if err := txn.Delete(k); err != nil {
-				return fmt.Errorf("DeleteAuthor: failed to drop record %x: %w", k, err)
-			}
-		}
-		return nil
-	})
+	prefix := []byte(storedrefs.Feed(who))
+	return b.store.DeletePrefix(prefix)
 }
 
-func (b *BadgerBuilder) Authorizer(from refs.FeedRef, maxHops int) ssb.Authorizer {
+func (b *GraphBuilder) Authorizer(from refs.FeedRef, maxHops int) ssb.Authorizer {
 	return &authorizer{
 		b:       b,
 		from:    from,
@@ -124,7 +108,7 @@ func (b *BadgerBuilder) Authorizer(from refs.FeedRef, maxHops int) ssb.Authorize
 	}
 }
 
-func (b *BadgerBuilder) Build() (*Graph, error) {
+func (b *GraphBuilder) Build() (*Graph, error) {
 	b.WaitUntilIndexesAreSynced()
 	dg := NewGraph()
 
@@ -135,103 +119,89 @@ func (b *BadgerBuilder) Build() (*Graph, error) {
 		return b.cachedGraph, nil
 	}
 
-	err := b.kv.View(func(txn *badger.Txn) error {
-		iter := txn.NewIterator(badger.DefaultIteratorOptions)
-		defer iter.Close()
-
-		for iter.Seek(dbKeyPrefix); iter.ValidForPrefix(dbKeyPrefix); iter.Next() {
-			it := iter.Item()
-			k := it.Key()
-			if len(k) != 68+dbKeyPrefixLen {
-				continue
-			}
-
-			rawFrom := k[dbKeyPrefixLen : 34+dbKeyPrefixLen]
-			rawTo := k[34+dbKeyPrefixLen:]
-
-			if bytes.Equal(rawFrom, rawTo) {
-				// contact self?!
-				continue
-			}
-
-			var to, from tfk.Feed
-			if err := from.UnmarshalBinary(rawFrom); err != nil {
-				return fmt.Errorf("builder: couldnt idx key value (from): %w", err)
-			}
-			if err := to.UnmarshalBinary(rawTo); err != nil {
-				return fmt.Errorf("builder: couldnt idx key value (to): %w", err)
-			}
-
-			bfrom := multilog.Addr(rawFrom)
-			nFrom, has := dg.lookup[bfrom]
-			if !has {
-				fromRef, err := from.Feed()
-				if err != nil {
-					return err
-				}
-
-				nFrom = &contactNode{dg.NewNode(), fromRef, ""}
-				dg.AddNode(nFrom)
-				dg.lookup[bfrom] = nFrom
-			}
-
-			bto := multilog.Addr(rawTo)
-			nTo, has := dg.lookup[bto]
-			if !has {
-				toRef, err := to.Feed()
-				if err != nil {
-					return err
-				}
-				nTo = &contactNode{dg.NewNode(), toRef, ""}
-				dg.AddNode(nTo)
-				dg.lookup[bto] = nTo
-			}
-
-			if nFrom.ID() == nTo.ID() {
-				continue
-			}
-
-			var edg graph.WeightedEdge
-
-			err := it.Value(func(v []byte) error {
-				if len(v) >= 1 {
-					switch v[0] {
-					case '0': // not following
-						edg = contactEdge{
-							WeightedEdge: simple.WeightedEdge{F: nFrom, T: nTo, W: math.Inf(-1)},
-							isBlock:      false,
-						}
-					case '1': // following
-						edg = contactEdge{
-							WeightedEdge: simple.WeightedEdge{F: nFrom, T: nTo, W: 1},
-							isBlock:      false,
-						}
-					case '2': // blocking
-						edg = contactEdge{
-							WeightedEdge: simple.WeightedEdge{F: nFrom, T: nTo, W: math.Inf(1)},
-							isBlock:      true,
-						}
-					case '3': // metafeed
-						edg = metafeedEdge{
-							WeightedEdge: simple.WeightedEdge{F: nFrom, T: nTo, W: 0.1},
-						}
-					default:
-						return fmt.Errorf("barbage value in graph strore %q", string(v))
-					}
-				}
-				return nil
-			})
-			if err != nil {
-				return fmt.Errorf("failed to get value from item:%q: %w", string(k), err)
-			}
-
-			if math.IsInf(edg.Weight(), -1) {
-				//dg.RemoveEdge(nFrom.ID(), nTo.ID())
-				continue
-			}
-
-			dg.SetWeightedEdge(edg)
+	err := b.store.IterateAll(func(k, v []byte) error {
+		if len(k) != 68 {
+			return nil
 		}
+
+		rawFrom := k[:34]
+		rawTo := k[34:]
+
+		if bytes.Equal(rawFrom, rawTo) {
+			// contact self?!
+			return nil
+		}
+
+		var to, from tfk.Feed
+		if err := from.UnmarshalBinary(rawFrom); err != nil {
+			return fmt.Errorf("builder: couldnt idx key value (from): %w", err)
+		}
+		if err := to.UnmarshalBinary(rawTo); err != nil {
+			return fmt.Errorf("builder: couldnt idx key value (to): %w", err)
+		}
+
+		bfrom := multilog.Addr(rawFrom)
+		nFrom, has := dg.lookup[bfrom]
+		if !has {
+			fromRef, err := from.Feed()
+			if err != nil {
+				return err
+			}
+
+			nFrom = &contactNode{dg.NewNode(), fromRef, ""}
+			dg.AddNode(nFrom)
+			dg.lookup[bfrom] = nFrom
+		}
+
+		bto := multilog.Addr(rawTo)
+		nTo, has := dg.lookup[bto]
+		if !has {
+			toRef, err := to.Feed()
+			if err != nil {
+				return err
+			}
+			nTo = &contactNode{dg.NewNode(), toRef, ""}
+			dg.AddNode(nTo)
+			dg.lookup[bto] = nTo
+		}
+
+		if nFrom.ID() == nTo.ID() {
+			return nil
+		}
+
+		var edg graph.WeightedEdge
+
+		if len(v) >= 1 {
+			switch v[0] {
+			case '0': // not following
+				edg = contactEdge{
+					WeightedEdge: simple.WeightedEdge{F: nFrom, T: nTo, W: math.Inf(-1)},
+					isBlock:      false,
+				}
+			case '1': // following
+				edg = contactEdge{
+					WeightedEdge: simple.WeightedEdge{F: nFrom, T: nTo, W: 1},
+					isBlock:      false,
+				}
+			case '2': // blocking
+				edg = contactEdge{
+					WeightedEdge: simple.WeightedEdge{F: nFrom, T: nTo, W: math.Inf(1)},
+					isBlock:      true,
+				}
+			case '3': // metafeed
+				edg = metafeedEdge{
+					WeightedEdge: simple.WeightedEdge{F: nFrom, T: nTo, W: 0.1},
+				}
+			default:
+				return fmt.Errorf("barbage value in graph strore %q", string(v))
+			}
+		}
+
+		if edg == nil || math.IsInf(edg.Weight(), -1) {
+			return nil
+		}
+
+		dg.SetWeightedEdge(edg)
 		return nil
 	})
 
@@ -253,38 +223,24 @@ func (l Lookup) Dist(to refs.FeedRef) ([]graph.Node, float64) {
 	return l.dijk.To(nTo.ID())
 }
 
-func (b *BadgerBuilder) Follows(forRef refs.FeedRef) (*ssb.StrFeedSet, error) {
+func (b *GraphBuilder) Follows(forRef refs.FeedRef) (*ssb.StrFeedSet, error) {
 	b.WaitUntilIndexesAreSynced()
 	fs := ssb.NewFeedSet(50)
-	err := b.kv.View(func(txn *badger.Txn) error {
-		iter := txn.NewIterator(badger.DefaultIteratorOptions)
-		defer iter.Close()
-
-		prefix := append(dbKeyPrefix, storedrefs.Feed(forRef)...)
-		for iter.Seek(prefix); iter.ValidForPrefix(prefix); iter.Next() {
-			it := iter.Item()
-			k := it.Key()
-
-			err := it.Value(func(v []byte) error {
-				if len(v) >= 1 && v[0] == '1' {
-					// extract 2nd feed ref out of db key
-					var sr tfk.Feed
-					err := sr.UnmarshalBinary(k[dbKeyPrefixLen+34:])
-					if err != nil {
-						return fmt.Errorf("follows(%s): invalid ref entry in db for feed: %w", forRef.String(), err)
-					}
-					fr, err := sr.Feed()
-					if err != nil {
-						return err
-					}
-					if err := fs.AddRef(fr); err != nil {
-						return fmt.Errorf("follows(%s): couldn't add parsed ref feed: %w", forRef.String(), err)
-					}
-				}
-				return nil
-			})
+	prefix := []byte(storedrefs.Feed(forRef))
+	err := b.store.IteratePrefix(prefix, func(k, v []byte) error {
+		if len(v) >= 1 && v[0] == '1' {
+			// extract 2nd feed ref out of key
+			var sr tfk.Feed
+			err := sr.UnmarshalBinary(k[34:])
 			if err != nil {
-				return fmt.Errorf("failed to get value from iter: %w", err)
+				return fmt.Errorf("follows(%s): invalid ref entry in db for feed: %w", forRef.String(), err)
+			}
+			fr, err := sr.Feed()
+			if err != nil {
+				return err
+			}
+			if err := fs.AddRef(fr); err != nil {
+				return fmt.Errorf("follows(%s): couldn't add parsed ref feed: %w", forRef.String(), err)
 			}
 		}
 		return nil
@@ -293,72 +249,49 @@ func (b *BadgerBuilder) Follows(forRef refs.FeedRef) (*ssb.StrFeedSet, error) {
 }
 
 // Metafeed returns the metafeed for a subfeed, or an error if it has none.
-func (b *BadgerBuilder) Metafeed(subfeed refs.FeedRef) (refs.FeedRef, error) {
+func (b *GraphBuilder) Metafeed(subfeed refs.FeedRef) (refs.FeedRef, error) {
 	b.WaitUntilIndexesAreSynced()
 	var found refs.FeedRef
-	err := b.kv.View(func(txn *badger.Txn) error {
-		iter := txn.NewIterator(badger.DefaultIteratorOptions)
-		defer iter.Close()
 
-		metafeedEntry := append(dbKeyPrefix, storedrefs.Feed(subfeed)...)
-		item, err := txn.Get(metafeedEntry)
-		if err != nil {
-			return err
-		}
+	key := []byte(storedrefs.Feed(subfeed))
+	v, err := b.store.GetRelation(key)
+	if err != nil {
+		return found, err
+	}
 
-		err = item.Value(func(v []byte) error {
+	var sr tfk.Feed
+	err = sr.UnmarshalBinary(v)
+	if err != nil {
+		return found, fmt.Errorf("metafeed(%s): invalid ref entry in db for feed: %w", subfeed.String(), err)
+	}
+	fr, err := sr.Feed()
+	if err != nil {
+		return found, err
+	}
+	found = fr
+
+	return found, nil
+}
+
+// Subfeeds returns the set of subfeeds for a particular metafeed.
+func (b *GraphBuilder) Subfeeds(metaFeed refs.FeedRef) (*ssb.StrFeedSet, error) {
+	b.WaitUntilIndexesAreSynced()
+	fs := ssb.NewFeedSet(50)
+	prefix := []byte(storedrefs.Feed(metaFeed))
+	err := b.store.IteratePrefix(prefix, func(k, v []byte) error {
+		if len(v) >= 1 && v[0] == '3' {
+			// extract 2nd feed ref out of key
 			var sr tfk.Feed
-			err := sr.UnmarshalBinary(v)
+			err := sr.UnmarshalBinary(k[34:])
 			if err != nil {
-				return fmt.Errorf("metafeed(%s): invalid ref entry in db for feed: %w", subfeed.String(), err)
+				return fmt.Errorf("subfeeds(%s): invalid ref entry in db for feed: %w", metaFeed.String(), err)
 			}
 			fr, err := sr.Feed()
 			if err != nil {
 				return err
 			}
-			found = fr
-
-			return nil
-		})
-
-		return err
-	})
-	return found, err
-}
-
-// Subfeeds returns the set of subfeeds for a particular metafeed.
-func (b *BadgerBuilder) Subfeeds(metaFeed refs.FeedRef) (*ssb.StrFeedSet, error) {
-	b.WaitUntilIndexesAreSynced()
-	fs := ssb.NewFeedSet(50)
-	err := b.kv.View(func(txn *badger.Txn) error {
-		iter := txn.NewIterator(badger.DefaultIteratorOptions)
-		defer iter.Close()
-
-		prefix := append(dbKeyPrefix, storedrefs.Feed(metaFeed)...)
-		for iter.Seek(prefix); iter.ValidForPrefix(prefix); iter.Next() {
-			it := iter.Item()
-			k := it.Key()
-
-			err := it.Value(func(v []byte) error {
-				if len(v) >= 1 && v[0] == '3' {
-					// extract 2nd feed ref out of db key
-					var sr tfk.Feed
-					err := sr.UnmarshalBinary(k[dbKeyPrefixLen+34:])
-					if err != nil {
-						return fmt.Errorf("follows(%s): invalid ref entry in db for feed: %w", metaFeed.String(), err)
-					}
-					fr, err := sr.Feed()
-					if err != nil {
-						return err
-					}
-					if err := fs.AddRef(fr); err != nil {
-						return fmt.Errorf("follows(%s): couldn't add parsed ref feed: %w", metaFeed.String(), err)
-					}
-				}
-				return nil
-			})
-			if err != nil {
-				return fmt.Errorf("failed to get value from iter: %w", err)
+			if err := fs.AddRef(fr); err != nil {
+				return fmt.Errorf("subfeeds(%s): couldn't add parsed ref feed: %w", metaFeed.String(), err)
 			}
 		}
 		return nil
@@ -373,7 +306,7 @@ func (b *BadgerBuilder) Subfeeds(metaFeed refs.FeedRef) (*ssb.StrFeedSet, error)
 //   - max == 2: max:1 + follows of their friends
 //
 // See hops_test.go for concrete examples.
-func (b *BadgerBuilder) Hops(from refs.FeedRef, max int) *ssb.StrFeedSet {
+func (b *GraphBuilder) Hops(from refs.FeedRef, max int) *ssb.StrFeedSet {
 	b.WaitUntilIndexesAreSynced()
 	max++
 	walked := ssb.NewFeedSet(0)
@@ -387,7 +320,7 @@ func (b *BadgerBuilder) Hops(from refs.FeedRef, max int) *ssb.StrFeedSet {
 	return walked
 }
 
-func (b *BadgerBuilder) recurseHops(walked *ssb.StrFeedSet, vis map[string]struct{}, who refs.FeedRef, depth int) error {
+func (b *GraphBuilder) recurseHops(walked *ssb.StrFeedSet, vis map[string]struct{}, who refs.FeedRef, depth int) error {
 	if depth <= 0 {
 		return nil
 	}
@@ -485,7 +418,7 @@ func (b *BadgerBuilder) recurseHops(walked *ssb.StrFeedSet, vis map[string]struc
 	return nil
 }
 
-func (b *BadgerBuilder) DumpXMLOverHTTP(self refs.FeedRef, w http.ResponseWriter, req *http.Request) {
+func (b *GraphBuilder) DumpXMLOverHTTP(self refs.FeedRef, w http.ResponseWriter, req *http.Request) {
 	hlog := log.With(b.log, "http-handler", req.URL.Path)
 	g, err := b.Build()
 	if err != nil {

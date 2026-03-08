@@ -5,12 +5,10 @@
 package graph
 
 import (
-	"encoding/binary"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/dgraph-io/badger/v3"
 	margaret "github.com/ssbc/margaret/v2"
 	"github.com/zeebo/bencode"
 	"go.mindeco.de/log"
@@ -34,11 +32,11 @@ const (
 	idxRelValueMetafeed
 )
 
-func (b *BadgerBuilder) indexSyncStart() {
+func (b *GraphBuilder) indexSyncStart() {
 	b.idxInSync.Add(1)
 }
 
-func (b *BadgerBuilder) indexSyncDone() {
+func (b *GraphBuilder) indexSyncDone() {
 	// this delay is here so that the WaitGroup is held while serveIndex processes the next entry
 	time.AfterFunc(100*time.Millisecond, func() {
 		b.idxInSync.Done()
@@ -46,7 +44,7 @@ func (b *BadgerBuilder) indexSyncDone() {
 }
 
 // WaitUntilIndexesAreSynced blocks until all the index processing is in sync with the rootlog
-func (b *BadgerBuilder) WaitUntilIndexesAreSynced() {
+func (b *GraphBuilder) WaitUntilIndexesAreSynced() {
 	b.idxInSync.Wait()
 }
 
@@ -54,35 +52,19 @@ func (b *BadgerBuilder) WaitUntilIndexesAreSynced() {
 // It processes messages from a margaret log, calling the update function for each message.
 type graphLogIndexer struct {
 	name    string
-	db      *badger.DB
+	store   GraphStore
 	seqKey  []byte
-	builder *BadgerBuilder
+	builder *GraphBuilder
 	update  func(seq int64, msg refs.Message) error
 }
 
 func (gi *graphLogIndexer) lastProcessedSeq() int64 {
-	var val int64 = margaret.SeqEmpty
-	_ = gi.db.View(func(txn *badger.Txn) error {
-		item, err := txn.Get(gi.seqKey)
-		if err != nil {
-			return err // key not found => SeqEmpty
-		}
-		return item.Value(func(data []byte) error {
-			if len(data) == 8 {
-				val = int64(binary.BigEndian.Uint64(data))
-			}
-			return nil
-		})
-	})
+	val, _ := gi.store.SeqGet(gi.seqKey)
 	return val
 }
 
 func (gi *graphLogIndexer) setLastProcessedSeq(seq int64) {
-	_ = gi.db.Update(func(txn *badger.Txn) error {
-		var buf [8]byte
-		binary.BigEndian.PutUint64(buf[:], uint64(seq))
-		return txn.Set(gi.seqKey, buf[:])
-	})
+	_ = gi.store.SeqSet(gi.seqKey, seq)
 }
 
 // Index processes all unprocessed messages from the log.
@@ -112,20 +94,20 @@ func (gi *graphLogIndexer) Index(log margaret.Log[*multimsg.MultiMessage]) error
 func (gi *graphLogIndexer) Close() error { return nil }
 
 // OpenContactsIndex returns a LogIndexer that processes contact messages.
-func (b *BadgerBuilder) OpenContactsIndex() *graphLogIndexer {
+func (b *GraphBuilder) OpenContactsIndex() *graphLogIndexer {
 	b.indexSyncStart()
 	defer b.indexSyncDone()
 
 	return &graphLogIndexer{
 		name:    "contacts",
-		db:      b.kv,
+		store:   b.store,
 		seqKey:  []byte("trust-graph__seq:contacts"),
 		builder: b,
 		update:  b.updateContacts,
 	}
 }
 
-func (b *BadgerBuilder) updateContacts(_ int64, msg refs.Message) error {
+func (b *GraphBuilder) updateContacts(_ int64, msg refs.Message) error {
 	b.cacheLock.Lock()
 	defer b.cacheLock.Unlock()
 
@@ -155,20 +137,20 @@ func (b *BadgerBuilder) updateContacts(_ int64, msg refs.Message) error {
 }
 
 // OpenAnnouncementIndex returns a LogIndexer that processes metafeed/announce messages.
-func (b *BadgerBuilder) OpenAnnouncementIndex() *graphLogIndexer {
+func (b *GraphBuilder) OpenAnnouncementIndex() *graphLogIndexer {
 	b.indexSyncStart()
 	defer b.indexSyncDone()
 
 	return &graphLogIndexer{
 		name:    "announcements",
-		db:      b.kv,
+		store:   b.store,
 		seqKey:  []byte("trust-graph__seq:announcements"),
 		builder: b,
 		update:  b.updateAnnouncement,
 	}
 }
 
-func (b *BadgerBuilder) updateAnnouncement(_ int64, msg refs.Message) error {
+func (b *GraphBuilder) updateAnnouncement(_ int64, msg refs.Message) error {
 	b.cacheLock.Lock()
 	defer b.cacheLock.Unlock()
 
@@ -199,20 +181,20 @@ func (b *BadgerBuilder) updateAnnouncement(_ int64, msg refs.Message) error {
 }
 
 // OpenMetafeedsIndex returns a LogIndexer that processes metafeed messages (add/existing, add/derived, tombstone).
-func (b *BadgerBuilder) OpenMetafeedsIndex() *graphLogIndexer {
+func (b *GraphBuilder) OpenMetafeedsIndex() *graphLogIndexer {
 	b.indexSyncStart()
 	defer b.indexSyncDone()
 
 	return &graphLogIndexer{
 		name:    "metafeeds",
-		db:      b.kv,
+		store:   b.store,
 		seqKey:  []byte("trust-graph__seq:metafeeds"),
 		builder: b,
 		update:  b.updateMetafeeds,
 	}
 }
 
-func (b *BadgerBuilder) updateMetafeeds(_ int64, msg refs.Message) error {
+func (b *GraphBuilder) updateMetafeeds(_ int64, msg refs.Message) error {
 	b.cacheLock.Lock()
 	defer b.cacheLock.Unlock()
 

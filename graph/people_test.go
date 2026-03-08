@@ -507,7 +507,7 @@ func TestPeople(t *testing.T) {
 
 	for _, tc := range tcs {
 		t.Run(tc.name+"/badger", tc.run(makeBadger))
-		// t.Run(tc.name+"/tlog", tc.run(makeTypedLog))
+		t.Run(tc.name+"/bbolt", tc.run(makeBBolt))
 	}
 }
 

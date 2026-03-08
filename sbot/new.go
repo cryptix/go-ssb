@@ -27,6 +27,7 @@ import (
 	"github.com/ssbc/margaret/v2/multilog"
 	"github.com/ssbc/margaret/v2/multilog/roaring"
 	multifs "github.com/ssbc/margaret/v2/multilog/roaring/fs"
+	bolt "go.etcd.io/bbolt"
 	"go.mindeco.de/log"
 	"go.mindeco.de/log/level"
 	"golang.org/x/sync/errgroup"
@@ -145,6 +146,7 @@ type Sbot struct {
 	Mentions *roaring.MultiLog // one sublog per mentioned ref (feed, message, or blob)
 
 	indexStore *badger.DB
+	boltDB     *bolt.DB
 
 	// plugin indexes
 	mlogIndicies map[string]*roaring.MultiLog
@@ -307,6 +309,13 @@ func New(fopts ...Option) (*Sbot, error) {
 		return nil, err
 	}
 
+	boltPath := storageRepo.GetPath(repo.PrefixIndex, "bolt.db")
+	os.MkdirAll(filepath.Dir(boltPath), 0700)
+	s.boltDB, err = bolt.Open(boltPath, 0600, bolt.DefaultOptions)
+	if err != nil {
+		return nil, fmt.Errorf("sbot: failed to open bolt db: %w", err)
+	}
+
 	// default multilogs
 	var mlogs = []struct {
 		Name string
@@ -435,7 +444,11 @@ func New(fopts ...Option) (*Sbot, error) {
 	*/
 
 	// contact/follow graph
-	gb := graph.NewBuilder(log.With(s.info, "module", "graph"), s.indexStore, s.signHMACsecret)
+	graphStore, err := graph.NewBBoltGraphStore(s.boltDB)
+	if err != nil {
+		return nil, fmt.Errorf("sbot: failed to create graph store: %w", err)
+	}
+	gb := graph.NewBuilder(log.With(s.info, "module", "graph"), graphStore, s.signHMACsecret)
 	contactsIdx := gb.OpenContactsIndex()
 
 	// create data source for contacts
@@ -462,8 +475,9 @@ func New(fopts ...Option) (*Sbot, error) {
 	aboutIdx := namesPlug.OpenSharedIndex(s.indexStore)
 	s.serveIndexFrom("abouts", aboutIdx, aboutsOnly)
 
-	// need to close s.indexStore _after_ the all the indexes closed and flushed
+	// need to close s.indexStore and boltDB _after_ the all the indexes closed and flushed
 	s.closers.AddCloser(s.indexStore)
+	s.closers.AddCloser(s.boltDB)
 
 	// which feeds to replicate (only needed when networking is enabled)
 	if !s.disableNetwork {
