@@ -14,6 +14,7 @@ import (
 	"go.mindeco.de/logging"
 
 	"github.com/ssbc/go-ssb"
+	"github.com/ssbc/go-ssb/graph"
 	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/plugins/gossip"
 	"github.com/ssbc/go-ssb/query"
@@ -40,8 +41,10 @@ func (p plugin) Handler() muxrpc.Handler {
 func New(log logging.Interface,
 	fm *gossip.FeedManager,
 	feeds, bytype, roots *roaring.MultiLog,
+	channels, mentions *roaring.MultiLog,
 	rxlog margaret.Log[*multimsg.MultiMessage],
 	get ssb.Getter,
+	gb graph.Builder,
 ) ssb.Plugin {
 	rootHdlr := typemux.New(log)
 
@@ -52,7 +55,7 @@ func New(log logging.Interface,
 	})
 
 	rootHdlr.RegisterSource(muxrpc.Method{name, "getSubset"}, getSubsetHandler{
-		queryPlaner: query.NewSubsetPlaner(feeds, bytype),
+		queryPlaner: query.NewSubsetPlanerFull(feeds, bytype, roots, channels, mentions, rxlog, gb),
 		rxLog:       rxlog,
 	})
 
