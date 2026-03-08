@@ -42,6 +42,7 @@ func NewCombinedIndex(
 	self refs.FeedRef,
 	rxlog margaret.Log[*multimsg.MultiMessage],
 	u, p, bt, tan *roaring.MultiLog,
+	channels, mentions *roaring.MultiLog,
 	oh *roaring.MultiLog,
 	sm *statematrix.StateMatrix,
 ) (*CombinedIndex, error) {
@@ -62,10 +63,12 @@ func NewCombinedIndex(
 		boxer: box,
 
 		// application multilogs
-		users:   u,
-		private: p,
-		byType:  bt,
-		tangles: tan,
+		users:    u,
+		private:  p,
+		byType:   bt,
+		tangles:  tan,
+		channels: channels,
+		mentions: mentions,
 
 		ebtState: sm,
 
@@ -85,10 +88,12 @@ type CombinedIndex struct {
 
 	rxlog margaret.Log[*multimsg.MultiMessage]
 
-	users   *roaring.MultiLog
-	private *roaring.MultiLog
-	byType  *roaring.MultiLog
-	tangles *roaring.MultiLog
+	users    *roaring.MultiLog
+	private  *roaring.MultiLog
+	byType   *roaring.MultiLog
+	tangles  *roaring.MultiLog
+	channels *roaring.MultiLog
+	mentions *roaring.MultiLog
 
 	orderdHelper *roaring.MultiLog
 
@@ -267,11 +272,13 @@ func (idx *CombinedIndex) update(rxSeq int64, mm *multimsg.MultiMessage) error {
 		content = cleartext
 	}
 
-	// by type:...  and tangles (v1 & v2)
+	// by type:...  channels, mentions, and tangles (v1 & v2)
 	var jsonContent struct {
-		Type    string
-		Root    *refs.MessageRef
-		Tangles refs.Tangles
+		Type     string
+		Root     *refs.MessageRef
+		Tangles  refs.Tangles
+		Channel  string           `json:"channel"`
+		Mentions []mentionContent `json:"mentions"`
 	}
 	err = json.Unmarshal(content, &jsonContent)
 	if err != nil {
@@ -304,6 +311,42 @@ func (idx *CombinedIndex) update(rxSeq int64, mm *multimsg.MultiMessage) error {
 
 	if err := appendSeq(typedLog, rxSeq); err != nil {
 		return fmt.Errorf("error updating byType sublog: %w", err)
+	}
+
+	// root posts: messages without a content.root field
+	if jsonContent.Root == nil {
+		rootLog, err := idx.byType.Get(multilog.Addr("meta:root"))
+		if err != nil {
+			return fmt.Errorf("error opening root sublog: %w", err)
+		}
+		if err := appendSeq(rootLog, rxSeq); err != nil {
+			return fmt.Errorf("error updating root sublog: %w", err)
+		}
+	}
+
+	// channels
+	if jsonContent.Channel != "" {
+		channelLog, err := idx.channels.Get(multilog.Addr(jsonContent.Channel))
+		if err != nil {
+			return fmt.Errorf("error opening channel sublog: %w", err)
+		}
+		if err := appendSeq(channelLog, rxSeq); err != nil {
+			return fmt.Errorf("error updating channel sublog: %w", err)
+		}
+	}
+
+	// mentions: index each mentioned ref
+	for _, mention := range jsonContent.Mentions {
+		if mention.Link == "" {
+			continue
+		}
+		mentionLog, err := idx.mentions.Get(multilog.Addr(mention.Link))
+		if err != nil {
+			return fmt.Errorf("error opening mention sublog: %w", err)
+		}
+		if err := appendSeq(mentionLog, rxSeq); err != nil {
+			return fmt.Errorf("error updating mention sublog: %w", err)
+		}
 	}
 
 	// tangles v1 and v2
@@ -406,6 +449,11 @@ func (idx *CombinedIndex) tryDecrypt(mm *multimsg.MultiMessage, rxSeq int64) ([]
 	}
 
 	return cleartext, nil
+}
+
+// mentionContent represents a single entry in the content.mentions array
+type mentionContent struct {
+	Link string `json:"link"`
 }
 
 var (

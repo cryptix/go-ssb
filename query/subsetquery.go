@@ -32,6 +32,13 @@ type SubsetOperation struct {
 	// for tangle queries
 	root *refs.MessageRef
 	name string // tangle name for v2 tangles (empty for v1)
+
+	// for mentions / hasBlob
+	ref string // generic ref string (feed, message, or blob ref)
+
+	// for timestamp filtering
+	timestampGt int64 // messages after this unix timestamp (milliseconds)
+	timestampLt int64 // messages before this unix timestamp (milliseconds)
 }
 
 // NewSubsetOpByType returns a single operation which filters messages by type
@@ -52,6 +59,44 @@ func NewSubsetOpByTangle(root refs.MessageRef) SubsetOperation {
 // NewSubsetOpByTangleV2 returns a single operation which filters messages belonging to a named v2 tangle
 func NewSubsetOpByTangleV2(name string, root refs.MessageRef) SubsetOperation {
 	return SubsetOperation{operation: "tangle", root: &root, name: name}
+}
+
+// NewSubsetNotCombination returns a NOT operation that inverts/excludes the result of the inner operation.
+// e.g. not(author(blocked)) excludes messages from a blocked author.
+func NewSubsetNotCombination(op SubsetOperation) SubsetOperation {
+	return SubsetOperation{operation: "not", args: []SubsetOperation{op}}
+}
+
+// NewSubsetOpByChannel returns a single operation which filters messages by channel (hashtag)
+func NewSubsetOpByChannel(channel string) SubsetOperation {
+	return SubsetOperation{operation: "channel", string: channel}
+}
+
+// NewSubsetOpIsRoot returns an operation that matches only root posts (messages without content.root)
+func NewSubsetOpIsRoot() SubsetOperation {
+	return SubsetOperation{operation: "isRoot"}
+}
+
+// NewSubsetOpByMention returns a single operation which filters messages that mention a specific feed
+func NewSubsetOpByMention(a refs.FeedRef) SubsetOperation {
+	return SubsetOperation{operation: "mentions", feed: &a}
+}
+
+// NewSubsetOpHasBlob returns a single operation which filters messages that reference a specific blob
+func NewSubsetOpHasBlob(b refs.BlobRef) SubsetOperation {
+	return SubsetOperation{operation: "hasBlob", ref: b.Sigil()}
+}
+
+// NewSubsetOpHasRoot returns a single operation which filters messages that have a specific root.
+// This is equivalent to NewSubsetOpByTangle but named to match the oasis query builder pattern.
+func NewSubsetOpHasRoot(root refs.MessageRef) SubsetOperation {
+	return NewSubsetOpByTangle(root)
+}
+
+// NewSubsetOpByTimestamp returns an operation that filters messages within a time range.
+// Both gt and lt are unix timestamps in milliseconds. Use 0 to leave a bound open.
+func NewSubsetOpByTimestamp(gt, lt int64) SubsetOperation {
+	return SubsetOperation{operation: "timestamp", timestampGt: gt, timestampLt: lt}
 }
 
 // NewSubsetOpByAuthors is a convenience builder that creates an OR combination
@@ -124,6 +169,9 @@ func (so SubsetOperation) MarshalJSON() ([]byte, error) {
 	m.Args = so.args
 	m.Root = so.root
 	m.TangleName = so.name
+	m.Ref = so.ref
+	m.TimestampGt = so.timestampGt
+	m.TimestampLt = so.timestampLt
 
 	return json.Marshal(m)
 }
@@ -144,7 +192,17 @@ func (so *SubsetOperation) UnmarshalJSON(input []byte) error {
 	switch m.Operation {
 	case "and", "or":
 		so.args = m.Args
+	case "not":
+		if len(m.Args) != 1 {
+			return fmt.Errorf("subset: not operation requires exactly one argument, got %d", len(m.Args))
+		}
+		so.args = m.Args
 	case "type":
+		so.string = m.String
+	case "channel":
+		if m.String == "" {
+			return fmt.Errorf("subset: channel can't be empty")
+		}
 		so.string = m.String
 	case "author":
 		if m.Feed == nil {
@@ -154,12 +212,27 @@ func (so *SubsetOperation) UnmarshalJSON(input []byte) error {
 			return fmt.Errorf("subset: author is invalid feed format: %w", err)
 		}
 		so.feed = m.Feed
+	case "mentions":
+		if m.Feed == nil {
+			return fmt.Errorf("subset: mentions feed can't be empty")
+		}
+		so.feed = m.Feed
 	case "tangle":
 		if m.Root == nil {
 			return fmt.Errorf("subset: tangle root can't be empty")
 		}
 		so.root = m.Root
 		so.name = m.TangleName
+	case "isRoot":
+		// no arguments needed
+	case "hasBlob":
+		if m.Ref == "" {
+			return fmt.Errorf("subset: hasBlob ref can't be empty")
+		}
+		so.ref = m.Ref
+	case "timestamp":
+		so.timestampGt = m.TimestampGt
+		so.timestampLt = m.TimestampLt
 	default:
 		return fmt.Errorf("unhandled subset operation: %q", m.Operation)
 	}
@@ -179,4 +252,8 @@ type subsetOperationJSONMarshaler struct {
 
 	Root       *refs.MessageRef `json:"root,omitempty"`
 	TangleName string           `json:"tangle_name,omitempty"`
+
+	Ref         string `json:"ref,omitempty"`
+	TimestampGt int64  `json:"gt,omitempty"`
+	TimestampLt int64  `json:"lt,omitempty"`
 }

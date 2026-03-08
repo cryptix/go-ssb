@@ -134,10 +134,12 @@ type Sbot struct {
 	signHMACsecret *[32]byte
 
 	// hardcoded default indexes
-	Users   *roaring.MultiLog // one sublog per feed
-	Private *roaring.MultiLog // one sublog per keypair
-	ByType  *roaring.MultiLog // one sublog per type: ... (special cases for private messages by suffix)
-	Tangles *roaring.MultiLog // one sublog per root:%ref (actual root is in the get index)
+	Users    *roaring.MultiLog // one sublog per feed
+	Private  *roaring.MultiLog // one sublog per keypair
+	ByType   *roaring.MultiLog // one sublog per type: ... (special cases for private messages by suffix)
+	Tangles  *roaring.MultiLog // one sublog per root:%ref (actual root is in the get index)
+	Channels *roaring.MultiLog // one sublog per channel name
+	Mentions *roaring.MultiLog // one sublog per mentioned ref (feed, message, or blob)
 
 	indexStore *badger.DB
 
@@ -307,8 +309,8 @@ func New(fopts ...Option) (*Sbot, error) {
 		{multilogs.IndexNamePrivates, &s.Private},
 		{"msgTypes", &s.ByType},
 		{"tangles", &s.Tangles},
-		// TODO: channels
-		// TODO: mentions
+		{"channels", &s.Channels},
+		{"mentions", &s.Mentions},
 	}
 	for _, index := range mlogs {
 		mlog := multifs.NewMultiLog(storageRepo.GetPath(repo.PrefixMultiLog, index.Name))
@@ -354,6 +356,8 @@ func New(fopts ...Option) (*Sbot, error) {
 		s.Private,
 		s.ByType,
 		s.Tangles,
+		s.Channels,
+		s.Mentions,
 		groupsHelperMlog,
 		sm,
 	)
@@ -715,6 +719,8 @@ func New(fopts ...Option) (*Sbot, error) {
 		s.Users,
 		s.ByType,
 		s.Tangles,
+		s.Channels,
+		s.Mentions,
 		s.ReceiveLog, s)
 	s.public.Register(plug)
 	s.master.Register(plug)

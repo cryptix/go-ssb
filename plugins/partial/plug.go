@@ -40,6 +40,7 @@ func (p plugin) Handler() muxrpc.Handler {
 func New(log logging.Interface,
 	fm *gossip.FeedManager,
 	feeds, bytype, roots *roaring.MultiLog,
+	channels, mentions *roaring.MultiLog,
 	rxlog margaret.Log[*multimsg.MultiMessage],
 	get ssb.Getter,
 ) ssb.Plugin {
@@ -52,7 +53,7 @@ func New(log logging.Interface,
 	})
 
 	rootHdlr.RegisterSource(muxrpc.Method{name, "getSubset"}, getSubsetHandler{
-		queryPlaner: query.NewSubsetPlanerWithTangles(feeds, bytype, roots),
+		queryPlaner: query.NewSubsetPlanerFull(feeds, bytype, roots, channels, mentions, rxlog),
 		rxLog:       rxlog,
 	})
 
