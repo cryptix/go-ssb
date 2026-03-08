@@ -19,12 +19,24 @@ import (
 
 type SubsetPlaner struct {
 	authors, bytype *roaring.MultiLog
+	tangles         *roaring.MultiLog
 }
 
+// NewSubsetPlaner creates a new SubsetPlaner with author and type indexes.
+// For tangle query support, use NewSubsetPlanerWithTangles instead.
 func NewSubsetPlaner(authors, bytype *roaring.MultiLog) *SubsetPlaner {
 	return &SubsetPlaner{
 		authors: authors,
 		bytype:  bytype,
+	}
+}
+
+// NewSubsetPlanerWithTangles creates a new SubsetPlaner with author, type, and tangle indexes.
+func NewSubsetPlanerWithTangles(authors, bytype, tangles *roaring.MultiLog) *SubsetPlaner {
+	return &SubsetPlaner{
+		authors: authors,
+		bytype:  bytype,
+		tangles: tangles,
 	}
 }
 
@@ -74,6 +86,18 @@ func combineBitmaps(sp *SubsetPlaner, qry SubsetOperation) (*sroar.Bitmap, error
 
 	case "type":
 		return sp.bytype.LoadInternalBitmap(multilog.Addr("string:" + qry.string))
+
+	case "tangle":
+		if sp.tangles == nil {
+			return nil, fmt.Errorf("sbot: tangle queries not supported (no tangle index)")
+		}
+		var addr multilog.Addr
+		if qry.name == "" {
+			addr = storedrefs.TangleV1(*qry.root)
+		} else {
+			addr = storedrefs.TangleV2(qry.name, *qry.root)
+		}
+		return sp.tangles.LoadInternalBitmap(addr)
 
 	case "or", "and":
 		if len(qry.args) == 0 {

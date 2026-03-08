@@ -90,6 +90,13 @@ func TestSubsetQuerySerializing(t *testing.T) {
 			jsonInput: `{"op":"author","feed":""}`,
 			invalid:   true,
 		},
+
+		// tangle operations
+		{
+			name:      "empty tangle root",
+			jsonInput: `{"op":"tangle"}`,
+			invalid:   true,
+		},
 	}
 
 	for _, tc := range cases {
@@ -197,7 +204,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 	// wait for indexes to catch up, since the tests rely on them being up-to-date to be able to ask for messages by author or type
 	mainbot.WaitUntilIndexesAreSynced()
 
-	sp := query.NewSubsetPlaner(mainbot.Users, mainbot.ByType)
+	sp := query.NewSubsetPlanerWithTangles(mainbot.Users, mainbot.ByType, mainbot.Tangles)
 
 	t.Run("by author", func(t *testing.T) {
 		r := require.New(t)
@@ -228,6 +235,147 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 		r.Equal(testRefs[1], res[0])
 		r.Equal(testRefs[3], res[1])
 		r.Equal(testRefs[6], res[2])
+	})
+
+	// convenience builder tests
+
+	t.Run("byTypes convenience (contact and post)", func(t *testing.T) {
+		r := require.New(t)
+
+		qry := query.NewSubsetOpByTypes("contact", "post")
+		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		r.NoError(err)
+		r.Len(res, 3, "wrong number of resulting messages")
+		r.Equal(testRefs[1], res[0])
+		r.Equal(testRefs[3], res[1])
+		r.Equal(testRefs[6], res[2])
+	})
+
+	t.Run("byTypes convenience single type", func(t *testing.T) {
+		r := require.New(t)
+
+		qry := query.NewSubsetOpByTypes("post")
+		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		r.NoError(err)
+		r.Len(res, 1, "wrong number of resulting messages")
+		r.Equal(testRefs[6], res[0])
+	})
+
+	t.Run("byAuthors convenience (arny and cloe)", func(t *testing.T) {
+		r := require.New(t)
+
+		qry := query.NewSubsetOpByAuthors(kpArny.ID(), kpCloe.ID())
+		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		r.NoError(err)
+		r.Len(res, 5, "wrong number of resulting messages")
+	})
+
+	t.Run("byAuthorsAndTypes (bert's contacts)", func(t *testing.T) {
+		r := require.New(t)
+
+		qry := query.NewSubsetOpByAuthorsAndTypes(
+			[]refs.FeedRef{kpBert.ID()},
+			[]string{"contact"},
+		)
+		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		r.NoError(err)
+		r.Len(res, 1, "wrong number of resulting messages")
+		r.Equal(testRefs[3], res[0])
+	})
+
+	t.Run("byAuthorsAndTypes (multiple authors, multiple types)", func(t *testing.T) {
+		r := require.New(t)
+
+		qry := query.NewSubsetOpByAuthorsAndTypes(
+			[]refs.FeedRef{kpArny.ID(), kpCloe.ID()},
+			[]string{"about", "post"},
+		)
+		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		r.NoError(err)
+		// arny: about(0), cloe: about(5), post(6), about(7) = 4 msgs
+		r.Len(res, 4, "wrong number of resulting messages")
+	})
+
+	t.Run("byAuthorsAndTypes authors-only fallback", func(t *testing.T) {
+		r := require.New(t)
+
+		qry := query.NewSubsetOpByAuthorsAndTypes(
+			[]refs.FeedRef{kpArny.ID()},
+			nil,
+		)
+		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		r.NoError(err)
+		r.Len(res, 2, "wrong number of resulting messages")
+	})
+
+	t.Run("byAuthorsAndTypes types-only fallback", func(t *testing.T) {
+		r := require.New(t)
+
+		qry := query.NewSubsetOpByAuthorsAndTypes(
+			nil,
+			[]string{"post"},
+		)
+		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		r.NoError(err)
+		r.Len(res, 1, "wrong number of resulting messages")
+	})
+
+	// SubsetQuery high-level API tests
+
+	t.Run("SubsetQuery authors-and-types mode", func(t *testing.T) {
+		r := require.New(t)
+
+		sq := query.SubsetQuery{
+			Authors: []refs.FeedRef{kpBert.ID()},
+			Types:   []string{"about"},
+			Mode:    query.SubsetQueryModeAuthorsAndTypes,
+		}
+		op, err := sq.ToOperation()
+		r.NoError(err)
+
+		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, op)
+		r.NoError(err)
+		r.Len(res, 2, "bert has 2 about messages")
+	})
+
+	t.Run("SubsetQuery authors-only mode", func(t *testing.T) {
+		r := require.New(t)
+
+		sq := query.SubsetQuery{
+			Authors: []refs.FeedRef{kpCloe.ID()},
+			Mode:    query.SubsetQueryModeAuthorsOnly,
+		}
+		op, err := sq.ToOperation()
+		r.NoError(err)
+
+		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, op)
+		r.NoError(err)
+		r.Len(res, 3, "cloe has 3 messages total")
+	})
+
+	t.Run("SubsetQuery types-only mode", func(t *testing.T) {
+		r := require.New(t)
+
+		sq := query.SubsetQuery{
+			Types: []string{"contact"},
+			Mode:  query.SubsetQueryModeTypesOnly,
+		}
+		op, err := sq.ToOperation()
+		r.NoError(err)
+
+		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, op)
+		r.NoError(err)
+		r.Len(res, 2, "2 contact messages total")
+	})
+
+	t.Run("SubsetQuery invalid mode", func(t *testing.T) {
+		r := require.New(t)
+
+		sq := query.SubsetQuery{
+			Mode: "invalid",
+		}
+		_, err := sq.ToOperation()
+		r.Error(err)
 	})
 
 	// shutdown bot

@@ -52,7 +52,7 @@ func New(log logging.Interface,
 	})
 
 	rootHdlr.RegisterSource(muxrpc.Method{name, "getSubset"}, getSubsetHandler{
-		queryPlaner: query.NewSubsetPlaner(feeds, bytype),
+		queryPlaner: query.NewSubsetPlanerWithTangles(feeds, bytype, roots),
 		rxLog:       rxlog,
 	})
 
