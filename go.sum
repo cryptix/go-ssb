@@ -279,6 +279,8 @@ github.com/ssbc/go-ssb-refs v0.5.2 h1:PDjtfRMywwsP69pNdiCh/P9gj95W4iJsrQo5uDus0E
 github.com/ssbc/go-ssb-refs v0.5.2/go.mod h1:HlojPQQVXjZv+rqOnDVaZo5c8kwJQC7kpejcRqOJ54o=
 github.com/ssbc/margaret/v2 v2.0.0-20260308102751-06c45074e542 h1:tzWSA4OAGmpmyr1/EI7KI4BEnHCFV4z/5yovmby0vhI=
 github.com/ssbc/margaret/v2 v2.0.0-20260308102751-06c45074e542/go.mod h1:fkR79b6WUYgmC5S1e/TeaC0zEdxpnua0hc9R7JlmsTE=
+github.com/ssbc/margaret/v2 v2.0.0-20260308112302-d31aa606b278 h1:n/I/ULo7j2UE02yOiiV8nXfnLYuC88rDY7KTWee/NE0=
+github.com/ssbc/margaret/v2 v2.0.0-20260308112302-d31aa606b278/go.mod h1:fkR79b6WUYgmC5S1e/TeaC0zEdxpnua0hc9R7JlmsTE=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/objx v0.4.0/go.mod h1:YvHI0jy2hoMjB+UWwv71VJQ9isScKT/TqJzVSSt89Yw=
 github.com/stretchr/objx v0.5.0/go.mod h1:Yh+to48EsGEfYuaHDzXPcE3xhTkx73EhmCGUpEOglKo=

@@ -26,6 +26,7 @@ import (
 	mindexes "github.com/ssbc/margaret/v2/indexes"
 	"github.com/ssbc/margaret/v2/multilog"
 	"github.com/ssbc/margaret/v2/multilog/roaring"
+	multibbolt "github.com/ssbc/margaret/v2/multilog/roaring/bbolt"
 	multifs "github.com/ssbc/margaret/v2/multilog/roaring/fs"
 	bolt "go.etcd.io/bbolt"
 	"go.mindeco.de/log"
@@ -316,23 +317,40 @@ func New(fopts ...Option) (*Sbot, error) {
 		return nil, fmt.Errorf("sbot: failed to open bolt db: %w", err)
 	}
 
-	// default multilogs
-	var mlogs = []struct {
+	// Dense multilogs — backed by filesystem (few sublogs, large bitmaps).
+	var denseMlogs = []struct {
 		Name string
 		Mlog **roaring.MultiLog
 	}{
 		{multilogs.IndexNameFeeds, &s.Users},
 		{multilogs.IndexNamePrivates, &s.Private},
 		{"msgTypes", &s.ByType},
-		{"tangles", &s.Tangles},
 		{"channels", &s.Channels},
-		{"mentions", &s.Mentions},
 	}
-	for _, index := range mlogs {
+	for _, index := range denseMlogs {
 		mlog := multifs.NewMultiLog(storageRepo.GetPath(repo.PrefixMultiLog, index.Name))
 		s.closers.AddCloser(mlog)
 		s.mlogIndicies[index.Name] = mlog
+		*index.Mlog = mlog
+	}
 
+	// Sparse multilogs — backed by bbolt (many sublogs with few entries each).
+	// Uses the shared bolt.DB with per-multilog bucket isolation, avoiding
+	// thousands of tiny files on the filesystem.
+	var sparseMlogs = []struct {
+		Name string
+		Mlog **roaring.MultiLog
+	}{
+		{"tangles", &s.Tangles},
+		{"mentions", &s.Mentions},
+	}
+	for _, index := range sparseMlogs {
+		mlog, err := multibbolt.NewMultiLogWithDB(s.boltDB, "mlog:"+index.Name)
+		if err != nil {
+			return nil, fmt.Errorf("sbot: failed to open bbolt multilog %s: %w", index.Name, err)
+		}
+		s.closers.AddCloser(mlog)
+		s.mlogIndicies[index.Name] = mlog
 		*index.Mlog = mlog
 	}
 
