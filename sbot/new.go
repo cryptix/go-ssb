@@ -48,6 +48,7 @@ import (
 	"github.com/ssbc/go-ssb/plugins/conn"
 	"github.com/ssbc/go-ssb/plugins/ebt"
 	"github.com/ssbc/go-ssb/plugins/friends"
+	"github.com/ssbc/go-ssb/query"
 	"github.com/ssbc/go-ssb/plugins/get"
 	"github.com/ssbc/go-ssb/plugins/gossip"
 	"github.com/ssbc/go-ssb/plugins/groups"
@@ -163,6 +164,9 @@ type Sbot struct {
 	eventCounter metrics.Counter
 	systemGauge  metrics.Gauge
 	latency      metrics.Histogram
+
+	enableSearch bool
+	SearchIndex  *multilogs.SearchIndex
 
 	enableMetafeeds bool
 	MetaFeeds       ssb.MetaFeeds
@@ -362,6 +366,17 @@ func New(fopts ...Option) (*Sbot, error) {
 	}
 	s.serveIndex("combined", combIdx)
 	s.closers.AddCloser(combIdx)
+
+	// full-text search index (optional)
+	if s.enableSearch {
+		searchIdx, err := multilogs.NewSearchIndex(s.repoPath)
+		if err != nil {
+			return nil, fmt.Errorf("sbot: failed to open search index: %w", err)
+		}
+		s.SearchIndex = searchIdx
+		s.serveIndex("search", searchIdx)
+		s.closers.AddCloser(searchIdx)
+	}
 
 	// groups re-indexing
 	members := multilogs.NewMembershipIndex(
@@ -710,12 +725,17 @@ func New(fopts ...Option) (*Sbot, error) {
 	s.master.Register(namesPlug)
 
 	// (insecure) partial proof-of-concept for browser-core/demo
+	var searchIdx query.Searcher
+	if s.SearchIndex != nil {
+		searchIdx = s.SearchIndex
+	}
 	plug := partial.New(s.info,
 		fm,
 		s.Users,
 		s.ByType,
 		s.Tangles,
-		s.ReceiveLog, s)
+		s.ReceiveLog, s,
+		searchIdx)
 	s.public.Register(plug)
 	s.master.Register(plug)
 

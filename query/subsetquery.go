@@ -50,6 +50,11 @@ func NewSubsetOrCombination(ops ...SubsetOperation) SubsetOperation {
 	return SubsetOperation{operation: "or", args: ops}
 }
 
+// NewSubsetOpBySearch returns a single operation which performs full-text search
+func NewSubsetOpBySearch(queryStr string) SubsetOperation {
+	return SubsetOperation{operation: "search", string: queryStr}
+}
+
 // MarshalJSON turns a SubsetOperation into JSON for remote calls.
 func (so SubsetOperation) MarshalJSON() ([]byte, error) {
 	var m subsetOperationJSONMarshaler
@@ -79,6 +84,8 @@ func (so *SubsetOperation) UnmarshalJSON(input []byte) error {
 	case "and", "or":
 		so.args = m.Args
 	case "type":
+		so.string = m.String
+	case "search":
 		so.string = m.String
 	case "author":
 		if m.Feed == nil {
