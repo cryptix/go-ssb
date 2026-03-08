@@ -19,6 +19,10 @@ var keyPrefix = []byte("readmark:")
 //
 // Keys have the format: readmark:<stream_type>:<stream_id>
 // Values are int64 sequence numbers encoded as 8-byte big-endian.
+//
+// To track different sort orders for the same stream, callers encode the sort
+// order into the stream ID by convention (e.g. "@ABC...ed25519:claimed" vs
+// "@ABC...ed25519" for receive-log order). The store treats stream_id as opaque.
 type ReadMarkStore struct {
 	db *badger.DB
 }

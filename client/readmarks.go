@@ -27,8 +27,9 @@ type ReadMarkGetResult struct {
 
 // ReadMarkSet stores a read position for a stream. streamType is one of
 // "feed", "thread", "channel", or "log". streamID identifies the specific
-// stream (a feed ref, message ref, channel name, or "root"). sequence is
-// the position read up to (inclusive).
+// stream (a feed ref, message ref, channel name, or "root"). To track
+// different sort orders, encode the order into the stream ID (e.g.
+// "@ABC...ed25519:claimed"). sequence is the position read up to (inclusive).
 func (c Client) ReadMarkSet(streamType, streamID string, sequence int64) error {
 	arg := struct {
 		StreamType string `json:"stream_type"`
