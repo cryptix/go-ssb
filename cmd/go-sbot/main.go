@@ -40,8 +40,9 @@ import (
 
 var (
 	// flags
-	flagCleanup  bool
-	flagReindex  bool
+	flagCleanup     bool
+	flagReindex     bool
+	flagWipeIndexes bool
 	flagFSCK     string
 	flagRepair   bool
 	flagFatBot   bool
@@ -128,6 +129,7 @@ func initFlags() {
 	flag.StringVar(&configPath, "config", filepath.Join(u.HomeDir, DEFAULT_GO_SSB_DIR), "path to config file; if filename is omitted from config path config.toml is used")
 
 	flag.BoolVar(&flagReindex, "reindex", false, "if set, sbot exits after having its indicies updated")
+	flag.BoolVar(&flagWipeIndexes, "wipe-indexes", false, "if set with -reindex, removes all index directories before rebuilding")
 
 	flag.BoolVar(&flagCleanup, "cleanup", false, "remove blocked feeds")
 
@@ -378,6 +380,20 @@ func runSbot() error {
 
 	if flagFSCK != "" {
 		opts = append(opts, mksbot.DisableNetworkNode(), mksbot.SkipConsistencyCheck())
+	}
+
+	if flagWipeIndexes {
+		if !flagReindex {
+			return fmt.Errorf("-wipe-indexes requires -reindex")
+		}
+		level.Warn(log).Log("event", "wiping indexes", "repo", repoDir)
+		for _, dir := range []string{"sublogs", "indexes"} {
+			p := filepath.Join(repoDir, dir)
+			if err := os.RemoveAll(p); err != nil {
+				return fmt.Errorf("failed to wipe %s: %w", dir, err)
+			}
+			level.Info(log).Log("event", "wiped", "dir", p)
+		}
 	}
 
 	sbot, err := mksbot.New(opts...)

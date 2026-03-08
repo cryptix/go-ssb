@@ -6,7 +6,9 @@ package multilogs
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -469,6 +471,15 @@ func (idx *CombinedIndex) update(rxSeq int64, mm *multimsg.MultiMessage) error {
 	return nil
 }
 
+// SanitizeChannelAddr produces a safe multilog.Addr from a channel name.
+// The persist/fs layer hex-encodes keys to produce filenames, so long UTF-8
+// channel names (e.g. Zalgo text) can exceed OS filename limits (255 bytes).
+// We hash the channel name to produce a fixed-length, filesystem-safe key.
+func SanitizeChannelAddr(channel string) multilog.Addr {
+	h := sha256.Sum256([]byte(channel))
+	return multilog.Addr("ch:" + hex.EncodeToString(h[:16]))
+}
+
 // updateSublogs updates all sublogs (users, byType, tangles, private) but
 // does NOT update the EBT state. This allows callers to batch EBT updates.
 func (idx *CombinedIndex) updateSublogs(rxSeq int64, mm *multimsg.MultiMessage) error {
@@ -556,7 +567,7 @@ func (idx *CombinedIndex) updateSublogs(rxSeq int64, mm *multimsg.MultiMessage) 
 
 	// channels
 	if jsonContent.Channel != "" {
-		channelLog, err := idx.channels.Get(multilog.Addr(jsonContent.Channel))
+		channelLog, err := idx.channels.Get(SanitizeChannelAddr(jsonContent.Channel))
 		if err != nil {
 			return fmt.Errorf("error opening channel sublog: %w", err)
 		}

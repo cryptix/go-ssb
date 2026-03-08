@@ -14,6 +14,7 @@ import (
 	"github.com/ssbc/go-ssb/graph"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
 	"github.com/ssbc/go-ssb/message/multimsg"
+	"github.com/ssbc/go-ssb/multilogs"
 	margaret "github.com/ssbc/margaret/v2"
 	"github.com/ssbc/margaret/v2/multilog"
 	"github.com/ssbc/margaret/v2/multilog/roaring"
@@ -177,7 +178,7 @@ func combineBitmaps(sp *SubsetPlaner, qry SubsetOperation) (*sroar.Bitmap, error
 		if sp.channels == nil {
 			return nil, fmt.Errorf("sbot: channel queries not supported (no channel index)")
 		}
-		return sp.channels.LoadInternalBitmap(multilog.Addr(qry.string))
+		return sp.channels.LoadInternalBitmap(multilogs.SanitizeChannelAddr(qry.string))
 
 	case "mentions":
 		if sp.mentions == nil {
