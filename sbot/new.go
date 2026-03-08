@@ -59,6 +59,7 @@ import (
 	privplug "github.com/ssbc/go-ssb/plugins/private"
 	"github.com/ssbc/go-ssb/plugins/publish"
 	"github.com/ssbc/go-ssb/plugins/rawread"
+	"github.com/ssbc/go-ssb/plugins/readmarks"
 	"github.com/ssbc/go-ssb/plugins/replicate"
 	"github.com/ssbc/go-ssb/plugins/status"
 	"github.com/ssbc/go-ssb/plugins/tangles"
@@ -779,6 +780,9 @@ func New(fopts ...Option) (*Sbot, error) {
 
 	// about information
 	s.master.Register(namesPlug)
+
+	// read markers
+	s.master.Register(readmarks.New(log.With(s.info, "unit", "readmarks"), s.indexStore))
 
 	// (insecure) partial proof-of-concept for browser-core/demo
 	var searchIdx query.Searcher
