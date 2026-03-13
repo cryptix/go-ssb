@@ -11,7 +11,18 @@ import (
 	refs "github.com/ssbc/go-ssb-refs"
 
 	"github.com/ssbc/go-ssb/query"
+	"github.com/ssbc/go-ssb/query/ql1"
 )
+
+// Query executes a ql1.Query against partialReplication.getSubset.
+//
+//	src, err := c.Query(ql.And(
+//	    ql.Type("post"),
+//	    ql.FollowedBy(me),
+//	).Descending().Limit(50))
+func (c Client) Query(q ql1.Query) (*muxrpc.ByteSource, error) {
+	return c.GetSubset(q.Operation(), q.Options())
+}
 
 // GetSubset calls partialReplication.getSubset with the given query operation
 // and options. If opts is nil, server defaults are used.
