@@ -40,6 +40,7 @@ type SbotConfig struct {
 	EnableEBT           ConfigBool `json:"enable-ebt"`
 	EnableFirewall      ConfigBool `json:"promisc"`
 	RepairFSBeforeStart ConfigBool `json:"repair"`
+	EnableSearch        ConfigBool `json:"enable-search"`
 
 	NumPeer uint `json:"numPeer,omitempty"`
 	NumRepl uint `json:"numRepl,omitempty"`

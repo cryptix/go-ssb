@@ -32,6 +32,13 @@ type SearchIndex struct {
 
 	stateFile *os.File
 	mu        sync.Mutex
+
+	onEntry func()
+}
+
+// SetOnEntry sets a callback that is invoked for each entry processed by Index().
+func (idx *SearchIndex) SetOnEntry(fn func()) {
+	idx.onEntry = fn
 }
 
 // NewSearchIndex opens or creates a Bleve full-text search index.
@@ -135,6 +142,9 @@ func (idx *SearchIndex) Index(log margaret.Log[*multimsg.MultiMessage]) error {
 		}
 		lastBatchSeq = seq
 		totalProcessed++
+		if idx.onEntry != nil {
+			idx.onEntry()
+		}
 
 		if batchCount >= searchBatchSize {
 			if err := idx.index.Batch(batch); err != nil {

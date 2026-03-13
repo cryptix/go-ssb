@@ -53,7 +53,8 @@ var (
 	flagNumPeer  uint
 	flagNumRepl  uint
 
-	flagEnableEBT bool
+	flagEnableEBT    bool
+	flagEnableSearch bool
 
 	flagDisableUNIXSock bool
 
@@ -118,6 +119,7 @@ func initFlags() {
 	flag.StringVar(&wsTLSKey, "wstlskey", "", "tls key file for ssb-ws connections")
 
 	flag.BoolVar(&flagEnableEBT, "enable-ebt", false, "enable syncing by using epidemic-broadcast-trees (new code, test with caution)")
+	flag.BoolVar(&flagEnableSearch, "enable-search", false, "enable full-text search indexing using Bleve")
 
 	flag.BoolVar(&flagDisableUNIXSock, "nounixsock", false, "disable the UNIX socket RPC interface")
 
@@ -250,6 +252,9 @@ func applyConfigValues() {
 	if UseConfigValue("enable-ebt") {
 		flagEnableEBT = (bool)(config.EnableEBT)
 	}
+	if UseConfigValue("enable-search") {
+		flagEnableSearch = (bool)(config.EnableSearch)
+	}
 	if UseConfigValue("nounixsock") {
 		flagDisableUNIXSock = (bool)(config.NoUnixSocket)
 	}
@@ -338,6 +343,10 @@ func runSbot() error {
 		mksbot.DisableEBT(!flagEnableEBT),
 		mksbot.WithNumberOfConcurrentReplicationsPerPeer(flagNumPeer),
 		mksbot.WithNumberOfConcurrentReplications(flagNumRepl),
+	}
+
+	if flagEnableSearch {
+		opts = append(opts, mksbot.EnableSearch())
 	}
 
 	if !flagDisableUNIXSock {

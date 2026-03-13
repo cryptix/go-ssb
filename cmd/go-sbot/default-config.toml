@@ -41,6 +41,8 @@ enable-ebt = false
 promisc = false
 # Disable the UNIX socket RPC interface
 nounixsock = false
+# Enable full-text search indexing using Bleve
+enable-search = false
 
 
 
