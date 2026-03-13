@@ -16,7 +16,8 @@ import (
 )
 
 type session struct {
-	remote net.Addr // netwrap'ed shs address
+	ctx    context.Context // muxrpc session context, cancelled on disconnect
+	remote net.Addr        // netwrap'ed shs address
 
 	peer refs.FeedRef
 
@@ -27,8 +28,9 @@ type session struct {
 	subscribed map[string]context.CancelFunc
 }
 
-func newSession(remote net.Addr, peer refs.FeedRef, tx *muxrpc.ByteSink) *session {
+func newSession(ctx context.Context, remote net.Addr, peer refs.FeedRef, tx *muxrpc.ByteSink) *session {
 	return &session{
+		ctx:    ctx,
 		remote: remote,
 		peer:   peer,
 		tx:     tx,
@@ -72,14 +74,14 @@ type Sessions struct {
 
 // Started registers a new session for the network address and returns it.
 // It also closes open channels in waitingFor if they exist and thus makes WaitFor() calls return.
-func (s *Sessions) Started(addr net.Addr, peer refs.FeedRef, tx *muxrpc.ByteSink) *session {
+func (s *Sessions) Started(ctx context.Context, addr net.Addr, peer refs.FeedRef, tx *muxrpc.ByteSink) *session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	// we are using the full ip:port~pubkey notation as the map key
 	mk := addr.String()
 
-	session := newSession(addr, peer, tx)
+	session := newSession(ctx, addr, peer, tx)
 
 	s.open[mk] = session
 

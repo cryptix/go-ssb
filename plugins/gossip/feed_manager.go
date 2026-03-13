@@ -103,8 +103,7 @@ func (m *FeedManager) serveLiveFeeds() {
 		m.liveFeedsMut.Unlock()
 	}
 	if err := qry.Err(); err != nil && err != ssb.ErrShuttingDown && err != context.Canceled && !strings.HasSuffix(err.Error(), "file already closed") {
-		err = fmt.Errorf("error while serving live feed: %w", err)
-		panic(err)
+		level.Error(m.logger).Log("event", "live qry on rxlog failed", "err", err)
 	}
 	level.Warn(m.logger).Log("event", "live qry on rxlog exited")
 }

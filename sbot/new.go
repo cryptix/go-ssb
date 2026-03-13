@@ -989,6 +989,10 @@ func (s *Sbot) Close() error {
 	closeEvt := log.With(s.info, "event", "sbot closing")
 	s.closed = true
 
+	// Cancel the root context first so that all goroutines watching ctx.Done()
+	// (live queries, debounce loops, progress tickers) begin winding down.
+	s.Shutdown()
+
 	// Cancel all active replication streams before closing the network.
 	// This ensures feed subscriptions and live sinks are torn down cleanly
 	// rather than failing with broken-pipe errors during network close.

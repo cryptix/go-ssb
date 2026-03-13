@@ -153,6 +153,7 @@ func debounce(ctx context.Context, interval time.Duration, rxlog seqer, work fun
 		}
 	}()
 
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():

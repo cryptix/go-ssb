@@ -148,7 +148,7 @@ func (h *MUXRPCHandler) sendState(ctx context.Context, tx *muxrpc.ByteSink, remo
 // Called when the local want-clock changes (e.g. via Replicate()).
 func (h *MUXRPCHandler) PushState() {
 	h.Sessions.ForEach(func(sess *session) {
-		if err := h.sendState(context.TODO(), sess.tx, sess.peer); err != nil {
+		if err := h.sendState(sess.ctx, sess.tx, sess.peer); err != nil {
 			h.check(err)
 		}
 	})
@@ -162,7 +162,7 @@ func (h *MUXRPCHandler) Loop(ctx context.Context, tx *muxrpc.ByteSink, rx *muxrp
 		return
 	}
 
-	session := h.Sessions.Started(remoteAddr, peer, tx)
+	session := h.Sessions.Started(ctx, remoteAddr, peer, tx)
 
 	peerLogger := log.With(h.info, "r", peer.ShortSigil())
 
