@@ -147,13 +147,11 @@ func (h *handler) disconnect(ctx context.Context, r *muxrpc.Request) (interface{
 	}
 
 	if len(args) == 0 {
-		ct := h.node.GetConnTracker()
-		ct.CloseAll()
-	} else {
-		for _, ref := range args {
-			if edp, has := h.node.GetEndpointFor(ref); has {
-				edp.Terminate()
-			}
+		return nil, fmt.Errorf("conn.disconnect: at least one peer address is required")
+	}
+	for _, ref := range args {
+		if edp, has := h.node.GetEndpointFor(ref); has {
+			edp.Terminate()
 		}
 	}
 

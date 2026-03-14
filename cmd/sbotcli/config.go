@@ -47,7 +47,7 @@ func ReadEnvironmentVariables(config *config.SbotCliConfig) {
 
 func readEnvironmentBoolean(s string) config.ConfigBool {
 	var booly config.ConfigBool
-	err := json.Unmarshal([]byte(s), booly)
+	err := json.Unmarshal([]byte(s), &booly)
 	configCheck(err, "parsing environment variable bool")
 	return booly
 }

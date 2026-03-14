@@ -21,8 +21,27 @@ func websockHandler(n *Node) http.HandlerFunc {
 	var upgrader = websocket.Upgrader{
 		ReadBufferSize:  1024 * 4,
 		WriteBufferSize: 1024 * 4,
-		CheckOrigin: func(_ *http.Request) bool {
-			return true
+		CheckOrigin: func(r *http.Request) bool {
+			// If no Origin header, allow the request (non-browser clients)
+			origin := r.Header.Get("Origin")
+			if origin == "" {
+				return true
+			}
+			// Browser requests must have an Origin matching the Host (same-origin check)
+			// This prevents cross-site WebSocket hijacking from malicious web pages
+			host := r.Host
+			if host == "" {
+				host = r.Header.Get("Host")
+			}
+			// Strip scheme from origin to compare with host
+			// Origin format: "scheme://host[:port]"
+			originHost := origin
+			if idx := len("https://"); len(origin) > idx && origin[:idx] == "https://" {
+				originHost = origin[idx:]
+			} else if idx := len("http://"); len(origin) > idx && origin[:idx] == "http://" {
+				originHost = origin[idx:]
+			}
+			return originHost == host
 		},
 		EnableCompression: false,
 	}
@@ -153,11 +172,14 @@ func (conn wrappedConn) Close() error {
 func (c wrappedConn) LocalAddr() net.Addr  { return c.local }
 func (c wrappedConn) RemoteAddr() net.Addr { return c.remote }
 func (c wrappedConn) SetDeadline(t time.Time) error {
-	return nil // c.conn.SetDeadline(t)
+	if err := c.wsc.SetReadDeadline(t); err != nil {
+		return err
+	}
+	return c.wsc.SetWriteDeadline(t)
 }
 func (c wrappedConn) SetReadDeadline(t time.Time) error {
-	return nil // c.conn.SetReadDeadline(t)
+	return c.wsc.SetReadDeadline(t)
 }
 func (c wrappedConn) SetWriteDeadline(t time.Time) error {
-	return nil // c.conn.SetWriteDeadline(t)
+	return c.wsc.SetWriteDeadline(t)
 }

@@ -516,7 +516,7 @@ func (msg *WantMsg) UnmarshalJSON(data []byte) error {
 	for ref, dist := range wantsMap {
 		br, err := refs.ParseBlobRef(ref)
 		if err != nil {
-			fmt.Println(fmt.Errorf("WantMsg: error parsing blob reference: %w", err))
+			// skip malformed blob references
 			continue
 		}
 

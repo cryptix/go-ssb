@@ -108,8 +108,7 @@ func NewSequenceResolverFromMessages(msgs []refs.Message) (*SequenceResolver, er
 		sr.seq2feedseq = append(sr.seq2feedseq, msg.Seq())
 	}
 
-	took := time.Since(start)
-	fmt.Println("resolving all claimed time took: ", took)
+	_ = time.Since(start)
 	return &sr, nil
 }
 

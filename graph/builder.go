@@ -490,10 +490,11 @@ type graphReducer struct {
 	wanted wantedMap
 }
 
-// NewNode returns a new Node with a unique
-// arbitrary ID.
+// NewNode is required by the graph.NodeAdder interface but is intentionally
+// unimplemented. CopyWeighted never calls NewNode on the destination graph;
+// it only calls AddNode with existing nodes from the source graph.
 func (gs graphReducer) NewNode() graph.Node {
-	panic("NewNode not supported")
+	panic("graphReducer: NewNode should never be called during CopyWeighted")
 }
 
 // AddNode adds a node to the graph. AddNode panics if
@@ -505,10 +506,11 @@ func (gs graphReducer) AddNode(a graph.Node) {
 	gs.graph.AddNode(a)
 }
 
-// NewWeightedEdge returns a new WeightedEdge from
-// the source to the destination node.
+// NewWeightedEdge is required by the graph.WeightedEdgeAdder interface but is
+// intentionally unimplemented. CopyWeighted never calls NewWeightedEdge on the
+// destination; it copies existing edges from the source graph directly.
 func (gs graphReducer) NewWeightedEdge(from graph.Node, to graph.Node, weight float64) graph.WeightedEdge {
-	panic("not implemented") // TODO: Implement
+	panic("graphReducer: NewWeightedEdge should never be called during CopyWeighted")
 }
 
 // SetWeightedEdge adds an edge from one node to

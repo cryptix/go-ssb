@@ -92,6 +92,7 @@ type Node struct {
 
 	// "ssb-ws"
 	httpLis        net.Listener
+	httpServer     *http.Server
 	httpHandlerMu  sync.Mutex
 	httpHandler    http.Handler
 }
@@ -182,15 +183,19 @@ func New(opts Options) (*Node, error) {
 			return nil, err
 		}
 
+		n.httpServer = &http.Server{Handler: httpHandler}
+
 		// TODO: move to serve
 		go func() {
 			var err error
 			if opts.WebsocketTLSCert != "" && opts.WebsocketTLSKey != "" {
-				err = http.ServeTLS(n.httpLis, httpHandler, opts.WebsocketTLSCert, opts.WebsocketTLSKey)
+				err = n.httpServer.ServeTLS(n.httpLis, opts.WebsocketTLSCert, opts.WebsocketTLSKey)
 			} else {
-				err = http.Serve(n.httpLis, httpHandler)
+				err = n.httpServer.Serve(n.httpLis)
 			}
-			level.Error(n.log).Log("conn", "ssb-ws :8998 listen exited", "err", err)
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				level.Error(n.log).Log("conn", "ssb-ws listen exited", "err", err)
+			}
 		}()
 	}
 
@@ -507,9 +512,12 @@ func (n *Node) Close() error {
 		n.localDiscovTx.Stop()
 	}
 
-	if n.httpLis != nil {
-		err := n.httpLis.Close()
-		if err != nil {
+	if n.httpServer != nil {
+		if err := n.httpServer.Close(); err != nil {
+			return fmt.Errorf("ssb: failed to close http server: %w", err)
+		}
+	} else if n.httpLis != nil {
+		if err := n.httpLis.Close(); err != nil {
 			return fmt.Errorf("ssb: failed to close http listener: %w", err)
 		}
 	}

@@ -145,7 +145,8 @@ func TestFeedsLiveReconnect(t *testing.T) {
 			t.Log("disconnecting", botX)
 			go func(b *Sbot) {
 				time.Sleep(time.Second / 4)
-				timeoutCtx, _ := context.WithTimeout(ctx, 1*time.Minute)
+				timeoutCtx, cancel := context.WithTimeout(ctx, 1*time.Minute)
+				defer cancel()
 				err := b.Network.Connect(timeoutCtx, botI.Network.GetListenAddr())
 				r.NoError(err)
 			}(dcBot)

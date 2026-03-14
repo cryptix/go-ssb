@@ -93,13 +93,22 @@ func (h plotSVGHandler) HandleAsync(ctx context.Context, req *muxrpc.Request) (i
 	if err != nil {
 		return nil, err
 	}
+	defer os.Remove(fname.Name())
 
 	err = g.RenderSVG(fname)
 	if err != nil {
 		fname.Close()
-		os.Remove(fname.Name())
 		return nil, err
 	}
 
-	return fname.Name(), fname.Close()
+	if err := fname.Close(); err != nil {
+		return nil, err
+	}
+
+	svgData, err := os.ReadFile(fname.Name())
+	if err != nil {
+		return nil, fmt.Errorf("failed to read rendered SVG: %w", err)
+	}
+
+	return string(svgData), nil
 }

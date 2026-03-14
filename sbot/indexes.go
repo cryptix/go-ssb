@@ -21,7 +21,6 @@ import (
 
 	"github.com/ssbc/go-ssb"
 	"github.com/ssbc/go-ssb/message/multimsg"
-	"github.com/ssbc/go-ssb/multilogs"
 )
 
 // LogIndexer is implemented by all indexes that process messages from a margaret log.
@@ -72,17 +71,11 @@ func (s *Sbot) WaitUntilIndexesAreSynced() {
 	var wg sync.WaitGroup
 
 	// wait for the indexes in parallel so we catch up as quickly as possible
-	wg.Add(3)
+	wg.Add(2)
 
 	go func() {
-		// wait for our internal indexes to catch up
+		// wait for our internal indexes (including CombinedIndex which handles user feeds) to catch up
 		s.idxInSync.Wait()
-		wg.Done()
-	}()
-
-	go func() {
-		// wait for the multilogs to catch up
-		multilogs.WaitUntilUserFeedIndexIsSynced()
 		wg.Done()
 	}()
 

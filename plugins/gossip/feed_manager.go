@@ -99,6 +99,11 @@ func (m *FeedManager) serveLiveFeeds() {
 		sink, ok := m.liveFeeds[author.String()]
 		if ok {
 			sink.Send(msg.ValueContentJSON())
+			// Remove the MultiSink from the map if all its sinks have been
+			// cleaned up (disconnected peers, context cancelled, limit reached).
+			if sink.Count() == 0 {
+				delete(m.liveFeeds, author.String())
+			}
 		}
 		m.liveFeedsMut.Unlock()
 	}
@@ -138,7 +143,8 @@ func (m *FeedManager) addLiveFeed(
 	liveFeed.Register(ctx, sink, until)
 
 	m.liveFeeds[ssbID] = liveFeed
-	// TODO: Remove multiSink from map when complete
+	// Note: Empty MultiSink entries are cleaned up in serveLiveFeeds
+	// when all registered sinks have been removed (disconnect/limit/cancel).
 	return nil
 }
 

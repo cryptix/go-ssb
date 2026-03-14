@@ -118,7 +118,9 @@ func (s *Service) Create(uses uint, note string) (*invite.Token, error) {
 		// roll seed
 		var dbKey []byte
 		for {
-			rand.Read(inv.Seed[:])
+			if _, err := rand.Read(inv.Seed[:]); err != nil {
+				return fmt.Errorf("invite/create: failed to generate random seed (%w)", err)
+			}
 
 			inviteKeyPair, err := ssb.NewKeyPair(bytes.NewReader(inv.Seed[:]), refs.RefAlgoFeedSSB1)
 			if err != nil {

@@ -116,16 +116,13 @@ func (h handler) privatePublishBox1(msg []byte, recps []refs.Ref) ([]byte, error
 }
 
 func (h handler) privatePublishBox2(msg []byte, recps []refs.Ref) ([]byte, error) {
-	return nil, fmt.Errorf("TODO: get previous")
+	// TODO: get previous
 	// h.publish.Seq().Value()
-
 	// h.publish.Get(latest)
 	// msg.Previous
-
-	// TODO:
-	prev := refs.MessageRef{}
-
-	return h.mngr.EncryptBox2(msg, prev, recps)
+	// prev := refs.MessageRef{}
+	// return h.mngr.EncryptBox2(msg, prev, recps)
+	return nil, fmt.Errorf("TODO: get previous")
 }
 
 func (h handler) handleRead(ctx context.Context, req *muxrpc.Request, snk *muxrpc.ByteSink) error {

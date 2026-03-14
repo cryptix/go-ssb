@@ -61,8 +61,8 @@ func TestReceivedSet(t *testing.T) {
 	lm.Sequence = 666
 
 	newMsg := &legacy.StoredMessage{
-		Key_:      storedrefs.SerialzedMessage{msgKey},
-		Author_:   storedrefs.SerialzedFeed{bobsFeed},
+		Key_:      storedrefs.SerialzedMessage{MessageRef: msgKey},
+		Author_:   storedrefs.SerialzedFeed{FeedRef: bobsFeed},
 		Previous_: nil,
 		Sequence_: int64(lm.Sequence),
 		Raw_:      []byte(`"fakemsg"`),

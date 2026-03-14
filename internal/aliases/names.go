@@ -4,10 +4,6 @@
 
 package aliases
 
-import (
-	"fmt"
-)
-
 // IsValid decides weather an alias is okay for use or not.
 // The room spec defines it as _labels valid under RFC 1035_ ( https://ssb-ngi-pointer.github.io/rooms2/#alias-string )
 // but that can be mostly any string since DNS is a 8bit binary protocol,
@@ -36,7 +32,6 @@ func IsValid(alias string) bool {
 			continue
 		}
 
-		fmt.Println("found", char)
 		valid = false
 		break
 	}

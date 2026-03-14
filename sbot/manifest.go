@@ -7,7 +7,6 @@ package sbot
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
 	"github.com/ssbc/go-muxrpc/v3"
 )
@@ -34,18 +33,14 @@ func (manifestHandler) Handled(m muxrpc.Method) bool { return m.String() == "man
 func (manifestHandler) HandleConnect(context.Context, muxrpc.Endpoint) {}
 
 func (h manifestHandler) HandleCall(ctx context.Context, req *muxrpc.Request) {
-	err := req.Return(ctx, json.RawMessage(h))
-	if err != nil {
-		fmt.Println("manifest err", err)
-	}
+	_ = req.Return(ctx, json.RawMessage(h))
 }
 
 func init() {
 	manifestMap := make(map[string]interface{})
 	err := json.Unmarshal([]byte(manifestBlob), &manifestMap)
 	if !json.Valid([]byte(manifestBlob)) || err != nil {
-		fmt.Println(err)
-		panic("manifestBlob is broken json")
+		panic("manifestBlob is broken json: " + err.Error())
 	}
 
 	// remove the whitespaces

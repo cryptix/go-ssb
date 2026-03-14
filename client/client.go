@@ -70,16 +70,6 @@ func newClientWithOptions(opts []Option) (*Client, error) {
 	return &c, nil
 }
 
-func FromEndpoint(edp muxrpc.Endpoint, opts ...Option) (*Client, error) {
-	c, err := newClientWithOptions(opts)
-	if err != nil {
-		return nil, err
-	}
-	panic("TODO: is server?")
-	c.Endpoint = edp
-	return c, nil
-}
-
 func NewTCP(own ssb.KeyPair, remote net.Addr, opts ...Option) (*Client, error) {
 	c, err := newClientWithOptions(opts)
 	if err != nil {
@@ -241,13 +231,10 @@ func (ngr NamesGetResult) GetCommonName(feed refs.FeedRef) (string, bool) {
 	}
 	selfChosen, ok := namesFor[feed.Sigil()]
 	if !ok {
-		for about, mapv := range ngr {
-			_ = about
-			for from, prescribed := range mapv {
-				return prescribed, true
+		for _, mapv := range ngr {
+			for _, prescribed := range mapv {
 				// TODO: check that from is a friend
-				_ = from
-				break
+				return prescribed, true
 			}
 		}
 	}

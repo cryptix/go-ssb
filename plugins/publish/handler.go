@@ -86,13 +86,14 @@ func (h *handler) HandleAsync(ctx context.Context, req *muxrpc.Request) (interfa
 		}
 
 		if useBox2 {
+			// TODO: get previous for author
+			// prev := refs.MessageRef{}
+			// ciphertext, err := h.boxer.EncryptBox2(args[0], prev, opagueRefs)
+			// if err != nil {
+			// 	return nil, err
+			// }
+			// content = base64.StdEncoding.EncodeToString(ciphertext) + ".box2"
 			return nil, fmt.Errorf("TODO: get previous for author")
-			prev := refs.MessageRef{}
-			ciphertext, err := h.boxer.EncryptBox2(args[0], prev, opagueRefs)
-			if err != nil {
-				return nil, err
-			}
-			content = base64.StdEncoding.EncodeToString(ciphertext) + ".box2"
 		} else {
 			ciphertext, err := h.boxer.EncryptBox1(args[0], feedRefs...)
 			if err != nil {

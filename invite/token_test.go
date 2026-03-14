@@ -36,7 +36,7 @@ func TestParseParseLegacyToken(t *testing.T) {
 			Address: netwrap.WrapAddr(&net.TCPAddr{
 				IP:   net.ParseIP("255.1.1.255"),
 				Port: 666,
-			}, secretstream.Addr{testRef.PubKey()}),
+			}, secretstream.Addr{PubKey: testRef.PubKey()}),
 			Peer: testRef,
 			Seed: [32]byte{},
 		}},
@@ -46,7 +46,7 @@ func TestParseParseLegacyToken(t *testing.T) {
 			Address: netwrap.WrapAddr(&net.TCPAddr{
 				IP:   net.ParseIP("fc97:c693:8b07:f84e:cbbf:d89a:16d5:3630"),
 				Port: 1234,
-			}, secretstream.Addr{testRef.PubKey()}),
+			}, secretstream.Addr{PubKey: testRef.PubKey()}),
 			Peer: testRef,
 			Seed: [32]byte{},
 		}},
@@ -56,7 +56,7 @@ func TestParseParseLegacyToken(t *testing.T) {
 			Address: netwrap.WrapAddr(&net.TCPAddr{
 				IP:   net.ParseIP("127.0.0.1"),
 				Port: 666,
-			}, secretstream.Addr{testRef.PubKey()}),
+			}, secretstream.Addr{PubKey: testRef.PubKey()}),
 			Peer: testRef,
 			Seed: [32]byte{},
 		}},

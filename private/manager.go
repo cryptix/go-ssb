@@ -177,8 +177,7 @@ func (mgr *Manager) EncryptBox2(content []byte, prev refs.MessageRef, recpts []r
 		case refs.MessageRef:
 			// TODO: maybe verify this is a group message?
 			keyScheme = keys.SchemeLargeSymmetricGroup
-			panic("TODO: fix sortAndConcat")
-			// keyID = keys.ID(sortAndConcat(ref.Hash)) // actually just copy
+			return nil, fmt.Errorf("box2 group encryption: sortAndConcat not yet implemented")
 		default:
 			return nil, fmt.Errorf("TODO: unhandled recipient reference type: %T", ref)
 		}

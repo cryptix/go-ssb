@@ -193,7 +193,7 @@ func initClient(ctx *cli.Context) error {
 		longctx, shutdownFunc = context.WithCancel(context.Background())
 	}
 
-	signalc := make(chan os.Signal)
+	signalc := make(chan os.Signal, 1)
 	signal.Notify(signalc, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		s := <-signalc

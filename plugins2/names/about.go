@@ -9,7 +9,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
@@ -187,8 +186,6 @@ func (ab aboutStore) CollectedFor(ref refs.FeedRef) (*AboutInfo, error) {
 				case bytes.HasSuffix(k, []byte(":image")):
 					fieldPtr = &reduced.Image
 				default:
-					log.Printf("about debug: %s ", c.Sigil())
-					log.Printf("no field for: %q", string(k))
 					return nil
 				}
 

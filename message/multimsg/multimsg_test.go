@@ -40,9 +40,9 @@ func TestMultiMsgLegacy(t *testing.T) {
 	// craft legacy testmessage
 	testContent := []byte(`{Hello: world}`)
 	var lm legacy.StoredMessage
-	lm.Author_ = storedrefs.SerialzedFeed{feedRef}
+	lm.Author_ = storedrefs.SerialzedFeed{FeedRef: feedRef}
 	lm.Sequence_ = 123
-	lm.Key_ = storedrefs.SerialzedMessage{msgKey}
+	lm.Key_ = storedrefs.SerialzedMessage{MessageRef: msgKey}
 	lm.Raw_ = testContent
 
 	var mm MultiMessage

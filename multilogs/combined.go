@@ -161,7 +161,6 @@ func (idx *CombinedIndex) Box2Reindex(author refs.FeedRef) error {
 	fromAuthor.And(allBox2)
 
 	if fromAuthor.GetCardinality() == 0 {
-		fmt.Println("skipping empty set", allBox2.GetCardinality(), author.String())
 		return nil
 	}
 
@@ -393,8 +392,7 @@ func (idx *CombinedIndex) VerifyConsistency(rxlog margaret.Log[*multimsg.MultiMe
 			if err := persist.Save(idx.file, idx.latestSeq); err != nil {
 				return false, fmt.Errorf("consistency: failed to rewind state: %w", err)
 			}
-			fmt.Printf("combined-index: multilog is empty but state was at seq %d, forcing full re-index (likely storage backend change)\n",
-				prevSeq)
+			_ = prevSeq // was at prevSeq, forcing full re-index (likely storage backend change)
 			return true, nil
 		}
 	}
@@ -481,8 +479,7 @@ func (idx *CombinedIndex) VerifyConsistency(rxlog margaret.Log[*multimsg.MultiMe
 	if err := persist.Save(idx.file, idx.latestSeq); err != nil {
 		return false, fmt.Errorf("consistency: failed to rewind state: %w", err)
 	}
-	fmt.Printf("combined-index: consistency check found %d/%d feeds with missing index entries, forcing full re-index (was at seq %d)\n",
-		broken, len(feeds), prevSeq)
+	_ = prevSeq // consistency check found broken feeds, forcing full re-index
 
 	return true, nil
 }

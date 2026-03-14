@@ -222,14 +222,19 @@ func (srv unixSockServer) accept() {
 			continue
 		}
 
+		var wrapErr bool
 		for _, w := range srv.connWrappers {
 			var err error
 			wc, err = w(wc)
 			if err != nil {
 				level.Warn(srv.logger).Log("err", err)
 				c.Close()
-				continue
+				wrapErr = true
+				break
 			}
+		}
+		if wrapErr {
+			continue
 		}
 
 		go srv.serve(wc)

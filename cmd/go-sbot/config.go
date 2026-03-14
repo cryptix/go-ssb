@@ -138,7 +138,7 @@ func ReadEnvironmentVariables(config *config.SbotConfig) {
 
 func readEnvironmentBoolean(s string) config.ConfigBool {
 	var booly config.ConfigBool
-	err := json.Unmarshal([]byte(s), booly)
+	err := json.Unmarshal([]byte(s), &booly)
 	check(err, "parsing environment variable bool")
 	return booly
 }

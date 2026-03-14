@@ -215,7 +215,7 @@ func booleanIsTrue(s string) bool {
 
 func readEnvironmentBoolean(s string) ConfigBool {
 	var booly ConfigBool
-	err := json.Unmarshal([]byte(s), booly)
+	err := json.Unmarshal([]byte(s), &booly)
 	check(err, "parsing environment variable bool")
 	return booly
 }
