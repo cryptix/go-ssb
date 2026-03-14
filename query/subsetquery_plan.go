@@ -15,6 +15,7 @@ import (
 	"github.com/ssbc/go-ssb/internal/storedrefs"
 	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/multilogs"
+	"github.com/ssbc/go-ssb/repo"
 	margaret "github.com/ssbc/margaret/v2"
 	"github.com/ssbc/margaret/v2/multilog"
 	"github.com/ssbc/margaret/v2/multilog/roaring"
@@ -35,10 +36,14 @@ type SubsetPlaner struct {
 	// and for timestamp filtering
 	rxLog margaret.Log[*multimsg.MultiMessage]
 
+	// seqResolver provides O(1) timestamp lookups by receive log sequence,
+	// replacing the O(N) linear scan for timestamp queries.
+	seqResolver *repo.SequenceResolver
+
 	// graphBuilder provides access to the social follow/block graph
 	// for graph-aware query operations (followedBy, blockedBy, hops, friendsBlocks)
 	graphBuilder graph.Builder
-	search          Searcher // optional, may be nil
+	search       Searcher // optional, may be nil
 }
 
 // NewSubsetPlaner creates a new SubsetPlaner with author and type indexes.
@@ -65,6 +70,7 @@ func NewSubsetPlanerFull(
 	channels, mentions *roaring.MultiLog,
 	rxLog margaret.Log[*multimsg.MultiMessage],
 	gb graph.Builder,
+	sr *repo.SequenceResolver,
 ) *SubsetPlaner {
 	return &SubsetPlaner{
 		authors:      authors,
@@ -74,6 +80,7 @@ func NewSubsetPlanerFull(
 		mentions:     mentions,
 		rxLog:        rxLog,
 		graphBuilder: gb,
+		seqResolver:  sr,
 	}
 }
 
@@ -197,9 +204,32 @@ func combineBitmaps(sp *SubsetPlaner, qry SubsetOperation) (*sroar.Bitmap, error
 		return sp.bytype.LoadInternalBitmap(multilog.Addr("meta:root"))
 
 	case "timestamp":
-		// timestamp filtering requires the rxLog to scan messages
+		// Use SequenceResolver for O(1) timestamp lookups per entry
+		// instead of loading each message from the log.
+		if sp.seqResolver != nil {
+			maxSeq := sp.seqResolver.Seq() - 1
+			if maxSeq < 0 {
+				return nil, nil
+			}
+			result := sroar.NewBitmap()
+			for seq := int64(0); seq <= maxSeq; seq++ {
+				tsMillis, ok := sp.seqResolver.GetClaimedMillis(seq)
+				if !ok {
+					continue
+				}
+				if qry.timestampGt > 0 && tsMillis <= qry.timestampGt {
+					continue
+				}
+				if qry.timestampLt > 0 && tsMillis >= qry.timestampLt {
+					continue
+				}
+				result.Set(uint64(seq))
+			}
+			return result, nil
+		}
+		// Fallback: scan the log (slow, O(N) with message deserialization)
 		if sp.rxLog == nil {
-			return nil, fmt.Errorf("sbot: timestamp queries require rxLog on SubsetPlaner")
+			return nil, fmt.Errorf("sbot: timestamp queries require seqResolver or rxLog on SubsetPlaner")
 		}
 		maxSeq := sp.rxLog.Seq()
 		if maxSeq < 0 {

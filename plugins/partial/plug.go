@@ -18,6 +18,7 @@ import (
 	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/plugins/gossip"
 	"github.com/ssbc/go-ssb/query"
+	"github.com/ssbc/go-ssb/repo"
 )
 
 type plugin struct {
@@ -45,6 +46,7 @@ func New(log logging.Interface,
 	rxlog margaret.Log[*multimsg.MultiMessage],
 	get ssb.Getter,
 	gb graph.Builder,
+	sr *repo.SequenceResolver,
 	search query.Searcher, // may be nil
 ) ssb.Plugin {
 	rootHdlr := typemux.New(log)
@@ -55,7 +57,7 @@ func New(log logging.Interface,
 		rxlog: rxlog,
 	})
 
-	qp := query.NewSubsetPlanerFull(feeds, bytype, roots, channels, mentions, rxlog, gb)
+	qp := query.NewSubsetPlanerFull(feeds, bytype, roots, channels, mentions, rxlog, gb, sr)
 	if search != nil {
 		qp = qp.WithSearch(search)
 	}

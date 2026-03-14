@@ -78,7 +78,8 @@ func (c Client) SubsetFollowedBy(who refs.FeedRef, opts *query.SubsetOptions) (*
 
 // SubsetTimeline is a convenience method that returns posts from feeds followed
 // by the given feed, excluding blocked feeds. Results are returned newest-first.
-func (c Client) SubsetTimeline(who refs.FeedRef, limit int) (*muxrpc.ByteSource, error) {
+// Use afterSeq=0 for the first page; pass the rxSeq of the last message for subsequent pages.
+func (c Client) SubsetTimeline(who refs.FeedRef, limit int, afterSeq int64) (*muxrpc.ByteSource, error) {
 	op := query.NewSubsetAndCombination(
 		query.NewSubsetOpFollowedBy(who),
 		query.NewSubsetOpByType("post"),
@@ -88,6 +89,7 @@ func (c Client) SubsetTimeline(who refs.FeedRef, limit int) (*muxrpc.ByteSource,
 		Keys:       true,
 		Descending: true,
 		PageLimit:  limit,
+		AfterSeq:   afterSeq,
 	}
 	return c.GetSubset(op, opts)
 }

@@ -392,6 +392,15 @@ func (sr *SequenceResolver) Serialize() error {
 	return nil
 }
 
+// GetClaimedMillis returns the claimed timestamp in milliseconds for the given receive log sequence.
+// Returns (0, false) if the sequence is out of bounds.
+func (sr SequenceResolver) GetClaimedMillis(seq int64) (int64, bool) {
+	if seq < 0 || seq >= int64(len(sr.seq2claimed)) {
+		return 0, false
+	}
+	return sr.seq2claimed[seq] * 1000, true
+}
+
 // Seq returns the number of entries held by the resolver.
 func (sr SequenceResolver) Seq() int64 {
 	err := sr.checkConsistency()

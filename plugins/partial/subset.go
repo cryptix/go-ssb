@@ -23,6 +23,12 @@ type getSubsetHandler struct {
 	rxLog margaret.Log[*multimsg.MultiMessage]
 }
 
+// kvWithSeq wraps KeyValueRaw with the receive log sequence for cursor-based pagination.
+type kvWithSeq struct {
+	refs.KeyValueRaw
+	RxSeq int64 `json:"rxSeq"`
+}
+
 func (h getSubsetHandler) HandleSource(ctx context.Context, req *muxrpc.Request, sink *muxrpc.ByteSink) error {
 
 	var (
@@ -67,59 +73,97 @@ func (h getSubsetHandler) HandleSource(ctx context.Context, req *muxrpc.Request,
 
 	sink.SetEncoding(muxrpc.TypeJSON)
 
-	// iterate over the combined set of bitmaps
 	var (
 		buf bytes.Buffer
 		enc = json.NewEncoder(&buf)
 	)
 
-	vals := resulting.ToArray()
+	pageLimit := opts.PageLimit
+	afterSeq := opts.AfterSeq
+
 	if opts.Descending {
-		for i, j := 0, len(vals)-1; i < j; i, j = i+1, j-1 {
-			vals[i], vals[j] = vals[j], vals[i]
-		}
-	}
+		// Descending: materialize and walk from the end.
+		// The iterator only goes low-to-high, so we reverse the array.
+		vals := resulting.ToArray()
+		count := 0
+		for i := len(vals) - 1; i >= 0; i-- {
+			v := vals[i]
 
-	for _, v := range vals {
-		mm, err := h.rxLog.Get(int64(v))
-		if err != nil {
-			break
-		}
-
-		if mm.Message == nil {
-			continue
-		}
-		msg := mm.Message
-
-		if opts.Keys {
-			buf.Reset()
-
-			var kv refs.KeyValueRaw
-			kv.Key_ = msg.Key()
-			kv.Value = *msg.ValueContent()
-
-			if err := enc.Encode(kv); err != nil {
-				return fmt.Errorf("failed to encode json: %w", err)
+			// Cursor: skip entries with seq >= afterSeq (descending)
+			if afterSeq > 0 && int64(v) >= afterSeq {
+				continue
 			}
 
-			if _, err = buf.WriteTo(sink); err != nil {
-				return fmt.Errorf("failed to send json data: %w", err)
+			if err := h.emitMessage(int64(v), opts.Keys, &buf, enc, sink); err != nil {
+				return err
 			}
-		} else {
-			_, err = sink.Write(msg.ValueContentJSON())
-			if err != nil {
-				return fmt.Errorf("failed to send json data: %w", err)
+
+			count++
+			if pageLimit > 0 && count >= pageLimit {
+				break
 			}
 		}
+	} else {
+		// Ascending: use bitmap iterator to avoid materializing the entire bitmap.
+		it := resulting.NewIterator()
+		count := 0
+		for i := 0; i < resulting.GetCardinality(); i++ {
+			v := it.Next()
 
-		if opts.PageLimit >= 0 {
-			opts.PageLimit--
-			if opts.PageLimit == 0 {
+			// Cursor: skip entries with seq <= afterSeq (ascending)
+			if afterSeq > 0 && int64(v) <= afterSeq {
+				continue
+			}
+
+			if err := h.emitMessage(int64(v), opts.Keys, &buf, enc, sink); err != nil {
+				return err
+			}
+
+			count++
+			if pageLimit > 0 && count >= pageLimit {
 				break
 			}
 		}
 	}
 
 	sink.Close()
+	return nil
+}
+
+// emitMessage fetches a message from the receive log at the given sequence and writes it to the sink.
+func (h getSubsetHandler) emitMessage(rxSeq int64, keys bool, buf *bytes.Buffer, enc *json.Encoder, sink *muxrpc.ByteSink) error {
+	mm, err := h.rxLog.Get(rxSeq)
+	if err != nil {
+		return fmt.Errorf("failed to get message at seq %d: %w", rxSeq, err)
+	}
+
+	if mm.Message == nil {
+		return nil
+	}
+	msg := mm.Message
+
+	if keys {
+		buf.Reset()
+
+		kv := kvWithSeq{
+			RxSeq: rxSeq,
+		}
+		kv.Key_ = msg.Key()
+		kv.Value = *msg.ValueContent()
+
+		if err := enc.Encode(kv); err != nil {
+			return fmt.Errorf("failed to encode json: %w", err)
+		}
+
+		if _, err = buf.WriteTo(sink); err != nil {
+			return fmt.Errorf("failed to send json data: %w", err)
+		}
+	} else {
+		_, err = sink.Write(msg.ValueContentJSON())
+		if err != nil {
+			return fmt.Errorf("failed to send json data: %w", err)
+		}
+	}
+
 	return nil
 }

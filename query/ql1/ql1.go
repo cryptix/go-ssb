@@ -174,6 +174,12 @@ func (q Query) Limit(n int) Query {
 	return q
 }
 
+// AfterCursor sets the pagination cursor to resume after the given receive log sequence.
+func (q Query) AfterCursor(seq int64) Query {
+	q.opts.AfterSeq = seq
+	return q
+}
+
 // WithKeys includes message keys in results (default on the server when omitted).
 func (q Query) WithKeys() Query {
 	q.opts.Keys = true

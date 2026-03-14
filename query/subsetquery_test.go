@@ -283,7 +283,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 	// wait for indexes to catch up, since the tests rely on them being up-to-date to be able to ask for messages by author or type
 	mainbot.WaitUntilIndexesAreSynced()
 
-	sp := query.NewSubsetPlanerFull(mainbot.Users, mainbot.ByType, mainbot.Tangles, mainbot.Channels, mainbot.Mentions, mainbot.ReceiveLog, mainbot.GraphBuilder)
+	sp := query.NewSubsetPlanerFull(mainbot.Users, mainbot.ByType, mainbot.Tangles, mainbot.Channels, mainbot.Mentions, mainbot.ReceiveLog, mainbot.GraphBuilder, mainbot.SeqResolver)
 
 	t.Run("by author", func(t *testing.T) {
 		r := require.New(t)

@@ -800,6 +800,7 @@ func New(fopts ...Option) (*Sbot, error) {
 		s.Mentions,
 		s.ReceiveLog, s,
 		s.GraphBuilder,
+		s.SeqResolver,
 		searchIdx)
 	s.public.Register(plug)
 	s.master.Register(plug)
