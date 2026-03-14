@@ -40,7 +40,7 @@ func (h hImagesFor) HandleAsync(ctx context.Context, req *muxrpc.Request) (inter
 	var mostSet string
 	var most = 0
 	for v, cnt := range ai.Image.Prescribed {
-		if most > cnt {
+		if cnt > most {
 			most = cnt
 			mostSet = v
 		}
@@ -61,7 +61,7 @@ func parseFeedRefFromArgs(req *muxrpc.Request) (refs.FeedRef, error) {
 		ID refs.FeedRef `json:"id"`
 	}
 	err = json.Unmarshal(req.RawArgs, &objArgs)
-	if err == nil && len(args) == 1 {
+	if err == nil && len(objArgs) == 1 {
 		return objArgs[0].ID, nil
 	}
 

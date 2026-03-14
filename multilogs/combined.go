@@ -263,6 +263,17 @@ func (idx *CombinedIndex) ProcessBatch(entries []IndexEntry) error {
 		})
 	}
 
+	// Flush all roaring multilogs before persisting state, so the state file
+	// never references bitmap data that isn't on disk yet.
+	for _, ml := range []*roaring.MultiLog{idx.users, idx.private, idx.byType, idx.tangles, idx.orderdHelper, idx.channels, idx.mentions} {
+		if ml == nil {
+			continue
+		}
+		if err := ml.Flush(); err != nil {
+			return fmt.Errorf("error flushing multilog during batch: %w", err)
+		}
+	}
+
 	// Single state file persist for the whole batch
 	if err := persist.Save(idx.file, lastSeq); err != nil {
 		return fmt.Errorf("error saving current sequence number: %w", err)
@@ -527,6 +538,9 @@ func (idx *CombinedIndex) updateSublogs(rxSeq int64, mm *multimsg.MultiMessage) 
 
 	// decrypt box 1 & 2
 	content := msg.ContentBytes()
+	if len(content) == 0 {
+		return nil
+	}
 	// TODO: gabby grove
 	if content[0] != '{' { // assuming all other content is json objects
 		cleartext, err := idx.tryDecrypt(mm, rxSeq)
@@ -668,7 +682,7 @@ func (idx *CombinedIndex) FlushAndSave() error {
 	defer idx.l.Unlock()
 
 	// Flush all roaring multilogs so bitmap data is on disk.
-	for _, ml := range []*roaring.MultiLog{idx.users, idx.private, idx.byType, idx.tangles, idx.orderdHelper} {
+	for _, ml := range []*roaring.MultiLog{idx.users, idx.private, idx.byType, idx.tangles, idx.orderdHelper, idx.channels, idx.mentions} {
 		if ml == nil {
 			continue
 		}

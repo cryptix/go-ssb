@@ -98,9 +98,13 @@ func unmarshalActionMap(next actionFn) typemux.AsyncFunc {
 func (h *handler) replicate(ctx context.Context, m actionMap) error {
 	for ref, do := range m {
 		if do {
-			h.repl.Replicate(ref)
+			if err := h.repl.Replicate(ref); err != nil {
+				return err
+			}
 		} else {
-			h.repl.DontReplicate(ref)
+			if err := h.repl.DontReplicate(ref); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

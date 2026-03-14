@@ -631,25 +631,31 @@ func New(fopts ...Option) (*Sbot, error) {
 		// we also need to pass the other feed type up the stack...!
 		// TODO: wrap conn with a new remoteAddr
 		ggRemote, err := refs.NewFeedRefFromBytes(remote.PubKey(), refs.RefAlgoFeedGabby)
-		err = auth.Authorize(ggRemote)
 		if err == nil {
-			level.Debug(s.info).Log("TODO", "found gg feed, using that. overhaul shs1 to support more payload in the handshake")
-			return s.public.MakeHandler(conn)
+			err = auth.Authorize(ggRemote)
+			if err == nil {
+				level.Debug(s.info).Log("TODO", "found gg feed, using that. overhaul shs1 to support more payload in the handshake")
+				return s.public.MakeHandler(conn)
+			}
 		}
 
 		// we also need to pass the other feed type up the stack...!
 		// TODO: wrap conn with a new remoteAddr
 		bbRemote, err := refs.NewFeedRefFromBytes(remote.PubKey(), refs.RefAlgoFeedBendyButt)
-		err = auth.Authorize(bbRemote)
 		if err == nil {
-			level.Debug(s.info).Log("TODO", "found bendy-butt feed, using that. overhaul shs1 to support more payload in the handshake")
-			return s.public.MakeHandler(conn)
+			err = auth.Authorize(bbRemote)
+			if err == nil {
+				level.Debug(s.info).Log("TODO", "found bendy-butt feed, using that. overhaul shs1 to support more payload in the handshake")
+				return s.public.MakeHandler(conn)
+			}
 		}
 
 		// TOFU restore/resync
 		if lst, err := s.Users.List(); err == nil && len(lst) == 0 {
 			level.Warn(s.info).Log("event", "no stored feeds - attempting re-sync with trust-on-first-use")
-			s.Replicate(s.KeyPair.ID())
+			if err := s.Replicate(s.KeyPair.ID()); err != nil {
+				return nil, fmt.Errorf("tofu replicate failed: %w", err)
+			}
 			return s.public.MakeHandler(conn)
 		}
 		return nil, err

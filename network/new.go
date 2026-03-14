@@ -91,8 +91,9 @@ type Node struct {
 	latency    metrics.Histogram
 
 	// "ssb-ws"
-	httpLis     net.Listener
-	httpHandler http.Handler
+	httpLis        net.Listener
+	httpHandlerMu  sync.Mutex
+	httpHandler    http.Handler
 }
 
 func New(opts Options) (*Node, error) {
@@ -167,8 +168,11 @@ func New(opts Options) (*Node, error) {
 			return
 		}
 		// n.log.Log("http-url-req", url)
-		if n.httpHandler != nil {
-			n.httpHandler.ServeHTTP(w, req)
+		n.httpHandlerMu.Lock()
+		h := n.httpHandler
+		n.httpHandlerMu.Unlock()
+		if h != nil {
+			h.ServeHTTP(w, req)
 		}
 	})
 
@@ -194,7 +198,9 @@ func New(opts Options) (*Node, error) {
 }
 
 func (n *Node) HandleHTTP(h http.Handler) {
+	n.httpHandlerMu.Lock()
 	n.httpHandler = h
+	n.httpHandlerMu.Unlock()
 }
 
 func (n *Node) GetConnTracker() ssb.ConnTracker {
@@ -242,7 +248,8 @@ func (n *Node) addRemote(edp muxrpc.Endpoint) {
 	defer n.remotesLock.Unlock()
 	r, err := ssb.GetFeedRefFromAddr(edp.Remote())
 	if err != nil {
-		panic(err)
+		level.Error(n.log).Log("msg", "addRemote: failed to get feed ref from addr", "err", err)
+		return
 	}
 	// ref := r.Ref()
 	// if oldEdp, has := n.remotes[ref]; has {
@@ -264,7 +271,8 @@ func (n *Node) removeRemote(edp muxrpc.Endpoint) {
 	defer n.remotesLock.Unlock()
 	r, err := ssb.GetFeedRefFromAddr(edp.Remote())
 	if err != nil {
-		panic(err)
+		level.Error(n.log).Log("msg", "removeRemote: failed to get feed ref from addr", "err", err)
+		return
 	}
 	delete(n.remotes, r.String())
 }

@@ -335,10 +335,13 @@ func combineBitmaps(sp *SubsetPlaner, qry SubsetOperation) (*sroar.Bitmap, error
 			return nil, fmt.Errorf("boolean (%s) operation %d of %d failed: %w", qry.operation, 1, len(qry.args), err)
 		}
 
-		// choose the boolean operation that all arguments will use
-		boolOp := workBitmap.Or
-		if qry.operation == "and" {
-			boolOp = workBitmap.And
+		// Handle nil workBitmap from the first argument:
+		// AND with empty = empty (short-circuit), OR with empty = start fresh
+		if workBitmap == nil {
+			if qry.operation == "and" {
+				return nil, nil
+			}
+			workBitmap = sroar.NewBitmap()
 		}
 
 		for i, op := range qry.args[1:] {
@@ -349,8 +352,21 @@ func combineBitmaps(sp *SubsetPlaner, qry SubsetOperation) (*sroar.Bitmap, error
 				return nil, fmt.Errorf("boolean (%s) operation %d of %d failed: %w", qry.operation, i+1, len(qry.args)-1, err)
 			}
 
+			// Handle nil opsBitmap:
+			// AND with empty = empty (short-circuit), OR with empty = skip
+			if opsBitmap == nil {
+				if qry.operation == "and" {
+					return nil, nil
+				}
+				continue
+			}
+
 			// apply the result to the workBitmap
-			boolOp(opsBitmap)
+			if qry.operation == "and" {
+				workBitmap.And(opsBitmap)
+			} else {
+				workBitmap.Or(opsBitmap)
+			}
 		}
 		return workBitmap, nil
 

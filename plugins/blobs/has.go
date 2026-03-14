@@ -38,14 +38,12 @@ func (h hasHandler) HandleAsync(ctx context.Context, req *muxrpc.Request) (inter
 		for k, blobRef := range blobRefs {
 			_, err = h.bs.Size(blobRef)
 
-			has[k] = true
-
 			if err == blobstore.ErrNoSuchBlob {
 				has[k] = false
 			} else if err != nil {
-				err = fmt.Errorf("error looking up blob: %w", err)
-				return nil, err
-
+				return nil, fmt.Errorf("error looking up blob: %w", err)
+			} else {
+				has[k] = true
 			}
 
 		}

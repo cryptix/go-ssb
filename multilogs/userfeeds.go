@@ -17,6 +17,12 @@ import (
 
 const IndexNameFeeds = "userFeeds"
 
+// TODO: idxInSync is a package-level WaitGroup shared across all sbot instances
+// in the same process. This causes data races when multiple sbot instances run
+// concurrently (e.g. in integration tests with makeTestBot). It should be moved
+// to a struct field (e.g. on CombinedIndex or Sbot) so each instance has its own
+// WaitGroup. This requires changing UserFeedsUpdate and WaitUntilUserFeedIndexIsSynced
+// to be methods on that struct, and updating all callers.
 var idxInSync sync.WaitGroup
 
 func indexSyncStart() {

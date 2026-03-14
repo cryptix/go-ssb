@@ -97,7 +97,7 @@ func (s *Sbot) WaitUntilIndexesAreSynced() {
 }
 
 func (s *Sbot) AreIndexesSynced() bool {
-	return s.idxNumSyncing == 0
+	return atomic.LoadInt64(&s.idxNumSyncing) == 0
 }
 
 // serveIndex fills an index with all messages from the receive log.

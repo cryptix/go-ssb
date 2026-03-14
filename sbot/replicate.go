@@ -7,6 +7,7 @@ package sbot
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -23,10 +24,10 @@ import (
 var _ ssb.Replicator = (*Sbot)(nil)
 
 // Replicate mark a feed for replication and connection acceptance
-func (sbot *Sbot) Replicate(r refs.FeedRef) {
+func (sbot *Sbot) Replicate(r refs.FeedRef) error {
 	slog, err := sbot.Users.Get(storedrefs.Feed(r))
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("sbot/replicate: failed to get user feed: %w", err)
 	}
 
 	// convert margaret 0-indexed to SSB 1-indexed sequence
@@ -44,12 +45,13 @@ func (sbot *Sbot) Replicate(r refs.FeedRef) {
 	if sbot.ebtHandler != nil {
 		sbot.ebtHandler.PushState()
 	}
+	return nil
 }
 
-func (sbot *Sbot) DontReplicate(r refs.FeedRef) {
+func (sbot *Sbot) DontReplicate(r refs.FeedRef) error {
 	slog, err := sbot.Users.Get(storedrefs.Feed(r))
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("sbot/dontReplicate: failed to get user feed: %w", err)
 	}
 
 	// convert margaret 0-indexed to SSB 1-indexed sequence
@@ -65,6 +67,7 @@ func (sbot *Sbot) DontReplicate(r refs.FeedRef) {
 	if sbot.ebtHandler != nil {
 		sbot.ebtHandler.PushState()
 	}
+	return nil
 }
 
 type graphReplicator struct {
@@ -82,7 +85,7 @@ func (s *Sbot) newGraphReplicator() (*graphReplicator, error) {
 
 	// update for new messages but only once they didnt change in a while
 	// meaning, not while sync is busy with new incoming messages
-	go debounce(s.rootCtx, 3*time.Second, s.ReceiveLog, update)
+	go debounce(s.rootCtx, 30*time.Second, s.ReceiveLog, update)
 
 	return &r, nil
 }
@@ -173,8 +176,14 @@ func debounce(ctx context.Context, interval time.Duration, rxlog seqer, work fun
 func (r *graphReplicator) Block(ref refs.FeedRef)   { r.current.blocked.AddRef(ref) }
 func (r *graphReplicator) Unblock(ref refs.FeedRef) { r.current.blocked.Delete(ref) }
 
-func (r *graphReplicator) Replicate(ref refs.FeedRef)     { r.current.feedWants.AddRef(ref) }
-func (r *graphReplicator) DontReplicate(ref refs.FeedRef) { r.current.feedWants.Delete(ref) }
+func (r *graphReplicator) Replicate(ref refs.FeedRef) error {
+	r.current.feedWants.AddRef(ref)
+	return nil
+}
+func (r *graphReplicator) DontReplicate(ref refs.FeedRef) error {
+	r.current.feedWants.Delete(ref)
+	return nil
+}
 
 func (r *graphReplicator) Lister() ssb.ReplicationLister { return r.current }
 

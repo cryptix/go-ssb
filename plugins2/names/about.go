@@ -23,7 +23,8 @@ import (
 )
 
 type aboutStore struct {
-	kv *badger.DB
+	kv        *badger.DB
+	idxInSync *sync.WaitGroup
 }
 
 type AboutInfo struct {
@@ -36,19 +37,18 @@ type AboutAttribute struct {
 }
 
 var idxKeyPrefix = []byte("idx-abouts")
-var idxInSync sync.WaitGroup
 
 func (ab aboutStore) waitForIndexes() {
-	idxInSync.Wait()
+	ab.idxInSync.Wait()
 }
 
 func (ab aboutStore) startIndexing() {
-	idxInSync.Add(1)
+	ab.idxInSync.Add(1)
 }
 
 func (ab aboutStore) doneIndexing() {
 	time.AfterFunc(100*time.Millisecond, func() {
-		idxInSync.Done()
+		ab.idxInSync.Done()
 	})
 }
 
@@ -231,7 +231,7 @@ type aboutLogIndexer struct {
 
 // OpenSharedIndex creates the about index backed by the given badger database.
 func (plug *Plugin) OpenSharedIndex(db *badger.DB) *aboutLogIndexer {
-	plug.about = aboutStore{db}
+	plug.about = aboutStore{kv: db, idxInSync: &sync.WaitGroup{}}
 
 	plug.about.startIndexing()
 	defer plug.about.doneIndexing()

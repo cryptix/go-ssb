@@ -6,6 +6,7 @@ package network
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"sync"
@@ -69,14 +70,14 @@ type connEntry struct {
 
 type connLookupMap map[[32]byte]connEntry
 
-func toActive(a net.Addr) [32]byte {
+func toActive(a net.Addr) ([32]byte, error) {
 	var pk [32]byte
 	shs, ok := netwrap.GetAddr(a, "shs-bs").(secretstream.Addr)
 	if !ok {
-		panic("not an SHS connection")
+		return pk, fmt.Errorf("conntracker: not an SHS connection")
 	}
 	copy(pk[:], shs.PubKey)
-	return pk
+	return pk, nil
 }
 
 func NewConnTracker() ssb.ConnTracker {
@@ -113,7 +114,10 @@ func (ct *connTracker) Count() uint {
 func (ct *connTracker) Active(a net.Addr) (bool, time.Duration) {
 	ct.activeLock.Lock()
 	defer ct.activeLock.Unlock()
-	k := toActive(a)
+	k, err := toActive(a)
+	if err != nil {
+		return false, 0
+	}
 	l, ok := ct.active[k]
 	if !ok {
 		return false, 0
@@ -124,7 +128,11 @@ func (ct *connTracker) Active(a net.Addr) (bool, time.Duration) {
 func (ct *connTracker) OnAccept(ctx context.Context, conn net.Conn) (bool, context.Context) {
 	ct.activeLock.Lock()
 	defer ct.activeLock.Unlock()
-	k := toActive(conn.RemoteAddr())
+	k, err := toActive(conn.RemoteAddr())
+	if err != nil {
+		log.Printf("conntracker: OnAccept failed: %v\n", err)
+		return false, nil
+	}
 	_, ok := ct.active[k]
 	if ok {
 		return false, nil
@@ -143,7 +151,10 @@ func (ct *connTracker) OnClose(conn net.Conn) time.Duration {
 	ct.activeLock.Lock()
 	defer ct.activeLock.Unlock()
 
-	k := toActive(conn.RemoteAddr())
+	k, err := toActive(conn.RemoteAddr())
+	if err != nil {
+		return 0
+	}
 	who, ok := ct.active[k]
 	if !ok {
 		return 0
@@ -164,7 +175,12 @@ type trackerLastWins struct {
 
 func (ct *trackerLastWins) OnAccept(ctx context.Context, newConn net.Conn) (bool, context.Context) {
 	ct.activeLock.Lock()
-	k := toActive(newConn.RemoteAddr())
+	k, err := toActive(newConn.RemoteAddr())
+	if err != nil {
+		ct.activeLock.Unlock()
+		log.Printf("[ConnTracker/lastWins] failed to get active key: %v\n", err)
+		return false, nil
+	}
 	oldConn, ok := ct.active[k]
 	ct.activeLock.Unlock()
 	if ok {

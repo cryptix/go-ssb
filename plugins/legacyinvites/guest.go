@@ -37,6 +37,7 @@ func (h acceptHandler) HandleCall(ctx context.Context, req *muxrpc.Request) {
 
 	if len(args) != 1 {
 		req.CloseWithError(fmt.Errorf("invalid argument count"))
+		return
 	}
 	arg := args[0]
 
@@ -103,7 +104,10 @@ func (h acceptHandler) HandleCall(ctx context.Context, req *muxrpc.Request) {
 		return
 	}
 
-	h.service.replicator.Replicate(arg.Feed)
+	if err := h.service.replicator.Replicate(arg.Feed); err != nil {
+		req.CloseWithError(fmt.Errorf("invite/accept: failed to replicate feed (%w)", err))
+		return
+	}
 
 	req.Return(ctx, msg.ValueContentJSON())
 

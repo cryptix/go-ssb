@@ -41,7 +41,8 @@ func (rn replicateNegotiator) HandleConnect(ctx context.Context, e muxrpc.Endpoi
 
 	remote, err := ssb.GetFeedRefFromAddr(remoteAddr)
 	if err != nil {
-		panic(err)
+		level.Error(rn.logger).Log("event", "failed to get feed ref from addr", "err", err)
+		return
 	}
 
 	level.Debug(rn.logger).Log("event", "triggering ebt.replicate", "r", remote.ShortSigil())

@@ -212,9 +212,9 @@ func (c Client) BlobsWant(ref refs.BlobRef) error {
 
 func (c Client) BlobsHas(ref refs.BlobRef) (bool, error) {
 	var has bool
-	err := c.Async(c.rootCtx, &has, muxrpc.TypeJSON, muxrpc.Method{"blobs", "want"}, ref.Sigil())
+	err := c.Async(c.rootCtx, &has, muxrpc.TypeJSON, muxrpc.Method{"blobs", "has"}, ref.Sigil())
 	if err != nil {
-		return false, fmt.Errorf("ssbClient: whoami failed: %w", err)
+		return false, fmt.Errorf("ssbClient: blobs.has failed: %w", err)
 	}
 	level.Debug(c.logger).Log("blob", "has", "has", has, "ref", ref.Sigil())
 	return has, nil
