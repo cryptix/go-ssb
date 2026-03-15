@@ -70,6 +70,23 @@ func TestPrettyPrint_EscapesCharactersDefinedByECMA262(t *testing.T) {
 	require.Equal(t, string(want.Bytes()), string(out))
 }
 
+func TestPrettyPrint_EmptyObject(t *testing.T) {
+	// JSON.stringify({a:{}}, null, 2) produces {} not {\n\n}
+	out, err := PrettyPrint([]byte(`{"a":{}}`))
+	require.NoError(t, err)
+	require.Equal(t, "{\n  \"a\": {}\n}", string(out))
+
+	// Nested empty object
+	out, err = PrettyPrint([]byte(`{"a":{"b":{}}}`))
+	require.NoError(t, err)
+	require.Equal(t, "{\n  \"a\": {\n    \"b\": {}\n  }\n}", string(out))
+
+	// Mix of empty and non-empty
+	out, err = PrettyPrint([]byte(`{"a":{},"b":"c"}`))
+	require.NoError(t, err)
+	require.Equal(t, "{\n  \"a\": {},\n  \"b\": \"c\"\n}", string(out))
+}
+
 func TestPrettyPrint_ReturnsErrorOnInvalidInput(t *testing.T) {
 	_, err := PrettyPrint([]byte(`{"":"}`))
 	require.EqualError(t, err, "message Encode: failed to format message as object: readStringSlowPath: unexpected end of input, error found in #6 byte of ...|{\"\":\"}|..., bigger context ...|{\"\":\"}|...")

@@ -24,15 +24,15 @@ func (pp *prettyPrinter) formatObject(depth int) error {
 		return errors.New("next value is not an object")
 	}
 
-	pp.buffer.WriteString("{\n")
-
 	i := 0
 	if cb := pp.iter.ReadObjectCB(func(iter *jsoniter.Iterator, s string) bool {
 		if depth == 1 {
 			pp.topLevelFields = append(pp.topLevelFields, s)
 		}
 
-		if i > 0 {
+		if i == 0 {
+			pp.buffer.WriteString("{\n")
+		} else {
 			pp.buffer.WriteString(",\n")
 		}
 
@@ -88,9 +88,13 @@ func (pp *prettyPrinter) formatObject(depth int) error {
 		return pp.iter.Error
 	}
 
-	pp.buffer.WriteString("\n")
-	pp.writeIndent(depth - 1)
-	pp.buffer.WriteString("}")
+	if i == 0 {
+		pp.buffer.WriteString("{}")
+	} else {
+		pp.buffer.WriteString("\n")
+		pp.writeIndent(depth - 1)
+		pp.buffer.WriteString("}")
+	}
 
 	return nil
 }
