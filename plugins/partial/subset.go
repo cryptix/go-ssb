@@ -14,13 +14,15 @@ import (
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/query"
+	"github.com/ssbc/go-ssb/repo"
 	margaret "github.com/ssbc/margaret/v2"
 )
 
 type getSubsetHandler struct {
 	queryPlaner *query.SubsetPlaner
 
-	rxLog margaret.Log[*multimsg.MultiMessage]
+	rxLog       margaret.Log[*multimsg.MultiMessage]
+	seqResolver *repo.SequenceResolver
 }
 
 // kvWithSeq wraps KeyValueRaw with the receive log sequence for cursor-based pagination.
@@ -81,15 +83,85 @@ func (h getSubsetHandler) HandleSource(ctx context.Context, req *muxrpc.Request,
 	pageLimit := opts.PageLimit
 	afterSeq := opts.AfterSeq
 
+	// When a SequenceResolver is available, sort results by claimed timestamp
+	// instead of receive log sequence. This gives causal ordering (newest-authored
+	// first) rather than receive ordering (last-replicated first).
+	if h.seqResolver != nil {
+		sorted, err := h.seqResolver.SortAndFilterBitmap(
+			resulting,
+			repo.SortByClaimed,
+			func(int64) bool { return true }, // no timestamp filtering
+			opts.Descending,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to sort results by claimed timestamp: %w", err)
+		}
+
+		// Cursor: afterSeq is an rxSeq from a previous page. Since results are
+		// now sorted by claimed timestamp (not rxSeq), we find its position in
+		// the sorted result and start emitting after that point.
+		//
+		// If the exact rxSeq isn't found (bitmap changed between pages), fall
+		// back to using the claimed timestamp of afterSeq to find the closest
+		// position: skip all entries whose timestamp is "before" the cursor in
+		// the current sort direction.
+		startIdx := 0
+		if afterSeq > 0 {
+			found := false
+			for i, entry := range sorted {
+				if entry.Seq == afterSeq {
+					startIdx = i + 1
+					found = true
+					break
+				}
+			}
+			if !found {
+				// Fallback: use the claimed timestamp of afterSeq to find position.
+				cursorTs, ok := h.seqResolver.GetClaimedMillis(afterSeq)
+				if ok {
+					// Convert to seconds to match the domain used by SortAndFilterBitmap.
+					cursorTsSec := cursorTs / 1000
+					for i, entry := range sorted {
+						if opts.Descending {
+							// Descending: skip entries with ts >= cursor
+							if entry.By < cursorTsSec {
+								startIdx = i
+								break
+							}
+						} else {
+							// Ascending: skip entries with ts <= cursor
+							if entry.By > cursorTsSec {
+								startIdx = i
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+
+		count := 0
+		for i := startIdx; i < len(sorted); i++ {
+			if err := h.emitMessage(sorted[i].Seq, opts.Keys, &buf, enc, sink); err != nil {
+				return err
+			}
+			count++
+			if pageLimit > 0 && count >= pageLimit {
+				break
+			}
+		}
+
+		sink.Close()
+		return nil
+	}
+
+	// Fallback: no SequenceResolver, walk bitmap by receive log sequence.
 	if opts.Descending {
-		// Descending: materialize and walk from the end.
-		// The iterator only goes low-to-high, so we reverse the array.
 		vals := resulting.ToArray()
 		count := 0
 		for i := len(vals) - 1; i >= 0; i-- {
 			v := vals[i]
 
-			// Cursor: skip entries with seq >= afterSeq (descending)
 			if afterSeq > 0 && int64(v) >= afterSeq {
 				continue
 			}
@@ -104,13 +176,11 @@ func (h getSubsetHandler) HandleSource(ctx context.Context, req *muxrpc.Request,
 			}
 		}
 	} else {
-		// Ascending: use bitmap iterator to avoid materializing the entire bitmap.
 		it := resulting.NewIterator()
 		count := 0
 		for i := 0; i < resulting.GetCardinality(); i++ {
 			v := it.Next()
 
-			// Cursor: skip entries with seq <= afterSeq (ascending)
 			if afterSeq > 0 && int64(v) <= afterSeq {
 				continue
 			}

@@ -590,6 +590,166 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 		r.Nil(res, "no friends blocks means nil result")
 	})
 
+	// --- Timestamp-sorted query tests ---
+	// These verify that subset query results can be sorted by claimed timestamp
+	// (causal order) using the SequenceResolver, and that pagination works on
+	// the sorted results.
+
+	t.Run("timestamp-sorted descending (posts)", func(t *testing.T) {
+		r := require.New(t)
+		a := assert.New(t)
+
+		// Get the bitmap for all posts
+		bitmap, err := sp.QuerySubsetBitmap(query.NewSubsetOpByType("post"))
+		r.NoError(err)
+		r.NotNil(bitmap)
+
+		// Sort by claimed timestamp descending
+		sorted, err := mainbot.SeqResolver.SortAndFilterBitmap(
+			bitmap,
+			repo.SortByClaimed,
+			func(int64) bool { return true },
+			true, // descending
+		)
+		r.NoError(err)
+		a.Len(sorted, 4, "4 post messages")
+
+		// Verify descending order: each entry's timestamp should be >= the next
+		for i := 0; i < len(sorted)-1; i++ {
+			a.GreaterOrEqual(sorted[i].By, sorted[i+1].By,
+				"entry %d (ts=%d) should be >= entry %d (ts=%d)",
+				i, sorted[i].By, i+1, sorted[i+1].By)
+		}
+	})
+
+	t.Run("timestamp-sorted ascending (posts)", func(t *testing.T) {
+		r := require.New(t)
+		a := assert.New(t)
+
+		bitmap, err := sp.QuerySubsetBitmap(query.NewSubsetOpByType("post"))
+		r.NoError(err)
+
+		sorted, err := mainbot.SeqResolver.SortAndFilterBitmap(
+			bitmap,
+			repo.SortByClaimed,
+			func(int64) bool { return true },
+			false, // ascending
+		)
+		r.NoError(err)
+		a.Len(sorted, 4)
+
+		for i := 0; i < len(sorted)-1; i++ {
+			a.LessOrEqual(sorted[i].By, sorted[i+1].By,
+				"entry %d (ts=%d) should be <= entry %d (ts=%d)",
+				i, sorted[i].By, i+1, sorted[i+1].By)
+		}
+	})
+
+	t.Run("timestamp-sorted timeline (followedBy + type + NOT blocked)", func(t *testing.T) {
+		r := require.New(t)
+		a := assert.New(t)
+
+		// arny's timeline: posts from feeds arny follows (bert), not blocked
+		timelineOp := query.NewSubsetAndCombination(
+			query.NewSubsetOpFollowedBy(kpArny.ID()),
+			query.NewSubsetOpByType("post"),
+			query.NewSubsetNotCombination(query.NewSubsetOpBlockedBy(kpArny.ID())),
+		)
+		bitmap, err := sp.QuerySubsetBitmap(timelineOp)
+		r.NoError(err)
+		r.NotNil(bitmap)
+
+		sorted, err := mainbot.SeqResolver.SortAndFilterBitmap(
+			bitmap,
+			repo.SortByClaimed,
+			func(int64) bool { return true },
+			true, // descending = newest first
+		)
+		r.NoError(err)
+		// bert has 1 post (msg 9)
+		a.Len(sorted, 1, "bert's posts on arny's timeline")
+
+		// Verify the rxSeq matches expected
+		a.EqualValues(9, sorted[0].Seq, "should be bert's post at rxSeq 9")
+	})
+
+	t.Run("pagination on timestamp-sorted results", func(t *testing.T) {
+		r := require.New(t)
+		a := assert.New(t)
+
+		// Get all messages sorted by claimed timestamp descending
+		bitmap, err := sp.QuerySubsetBitmap(query.NewSubsetOpByType("about"))
+		r.NoError(err)
+		r.NotNil(bitmap)
+
+		sorted, err := mainbot.SeqResolver.SortAndFilterBitmap(
+			bitmap,
+			repo.SortByClaimed,
+			func(int64) bool { return true },
+			true, // descending
+		)
+		r.NoError(err)
+		// about messages: 0, 2, 4, 5, 7 = 5 messages
+		a.Len(sorted, 5, "5 about messages total")
+
+		// Page 1: first 2 messages
+		page1 := sorted[:2]
+		a.Len(page1, 2)
+
+		// Page 2: use rxSeq of last message in page 1 as cursor
+		cursorSeq := page1[1].Seq
+		startIdx := 0
+		for i, entry := range sorted {
+			if entry.Seq == cursorSeq {
+				startIdx = i + 1
+				break
+			}
+		}
+
+		page2End := startIdx + 2
+		if page2End > len(sorted) {
+			page2End = len(sorted)
+		}
+		page2 := sorted[startIdx:page2End]
+		a.Len(page2, 2, "page 2 has 2 messages")
+
+		// Verify no overlap between pages
+		for _, p1 := range page1 {
+			for _, p2 := range page2 {
+				a.NotEqual(p1.Seq, p2.Seq, "pages should not overlap")
+			}
+		}
+
+		// Verify page 2 timestamps are <= page 1's last timestamp
+		a.GreaterOrEqual(page1[1].By, page2[0].By,
+			"page 2 should continue where page 1 left off")
+
+		// Page 3: remaining messages
+		cursor2 := page2[1].Seq
+		startIdx2 := 0
+		for i, entry := range sorted {
+			if entry.Seq == cursor2 {
+				startIdx2 = i + 1
+				break
+			}
+		}
+		page3 := sorted[startIdx2:]
+		a.Len(page3, 1, "page 3 has remaining 1 message")
+
+		// All 5 messages accounted for across 3 pages
+		allSeqs := make(map[int64]bool)
+		for _, p := range page1 {
+			allSeqs[p.Seq] = true
+		}
+		for _, p := range page2 {
+			allSeqs[p.Seq] = true
+		}
+		for _, p := range page3 {
+			allSeqs[p.Seq] = true
+		}
+		a.Len(allSeqs, 5, "all 5 about messages covered across 3 pages")
+	})
+
 	// shutdown bot
 	mainbot.Shutdown()
 	r.NoError(mainbot.Close())
