@@ -8,15 +8,25 @@ import (
 	"context"
 	"os"
 
+	refs "github.com/ssbc/go-ssb-refs"
+	"github.com/ssbc/go-muxrpc/v3"
 	"github.com/ssbc/go-muxrpc/v3/typemux"
 	"go.mindeco.de/log"
-
-	"github.com/ssbc/go-muxrpc/v3"
 	"go.mindeco.de/logging"
 )
 
 type Plugin struct {
 	about aboutStore
+}
+
+// CollectedFor returns the aggregated about information for the given feed.
+func (p *Plugin) CollectedFor(ref refs.FeedRef) (*AboutInfo, error) {
+	return p.about.CollectedFor(ref)
+}
+
+// ImageFor returns the blob reference for the given feed's profile image.
+func (p *Plugin) ImageFor(ref *refs.FeedRef) (*refs.BlobRef, error) {
+	return p.about.ImageFor(ref)
 }
 
 func (lt Plugin) Name() string            { return "names" }

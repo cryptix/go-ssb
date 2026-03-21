@@ -64,6 +64,7 @@ import (
 	"github.com/ssbc/go-ssb/plugins/tangles"
 	"github.com/ssbc/go-ssb/plugins/whoami"
 	"github.com/ssbc/go-ssb/plugins2/names"
+	"github.com/ssbc/go-ssb/web"
 	"github.com/ssbc/go-ssb/private"
 	"github.com/ssbc/go-ssb/private/keys"
 	"github.com/ssbc/go-ssb/repo"
@@ -164,6 +165,7 @@ type Sbot struct {
 	verifyRouter *message.VerificationRouter
 
 	GraphBuilder *graph.BadgerBuilder
+	NamesPlug    *names.Plugin
 
 	BlobStore   ssb.BlobStore
 	WantManager ssb.WantManager
@@ -490,6 +492,7 @@ func New(fopts ...Option) (*Sbot, error) {
 	var namesPlug names.Plugin
 	aboutIdx := namesPlug.OpenSharedIndex(s.indexStore)
 	s.serveIndexFrom("abouts", aboutIdx, aboutsOnly)
+	s.NamesPlug = &namesPlug
 
 	// need to close s.indexStore and boltDB _after_ the all the indexes closed and flushed
 	s.closers.AddCloser(s.indexStore)
@@ -902,7 +905,14 @@ func New(fopts ...Option) (*Sbot, error) {
 
 	graphDumpPathPrefix := "/graph/dump"
 
+	webUI := web.NewHandler(s.KeyPair.ID(), s.NamesPlug, s.Users, s.ReceiveLog)
+
 	simpleRouter := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if strings.HasPrefix(req.URL.Path, "/web") {
+			webUI.ServeHTTP(w, req)
+			return
+		}
+
 		if strings.HasPrefix(req.URL.Path, blobsGetPathPrefix) {
 			httpBlogsGet(w, req)
 			return
