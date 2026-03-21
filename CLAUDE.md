@@ -16,6 +16,31 @@ go vet ./...             # Lint
 
 Tests frequently use `testutils` helpers and `testops` for filesystem setup. Many integration tests create temporary sbot instances with `makeTestBot()`.
 
+## Key Commands
+
+- `/plan` - Implementation planning
+- `/learn-eval` - Extract and evaluate patterns from sessions
+- `/skill-create` - Generate skills from git history
+
+## Go Conventions
+
+- Follow Effective Go and the Go Code Review Comments guide
+- Use `errors.New` / `fmt.Errorf` with `%w` for wrapping — never string matching on errors
+- No `init()` functions — explicit initialization in `main()` or constructors
+- No global mutable state — pass dependencies via constructors
+- Context must be the first parameter and propagated through all layers
+- Return errors, don't panic — panics are only for truly unrecoverable situations
+- Wrap errors with context: `fmt.Errorf("creating user: %w", err)`
+
+## Code Style
+
+- No emojis in code or comments
+- Exported types and functions must have doc comments
+- Comment the "why", not the "what". Keep comments short
+- Keep functions under 50 lines — extract helpers
+- Use table-driven tests for all logic with multiple cases
+- Prefer `struct{}` for signal channels, not `bool`
+
 ## Architecture
 
 ### Core Data Flow
