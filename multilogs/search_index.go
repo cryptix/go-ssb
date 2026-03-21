@@ -101,8 +101,9 @@ func buildSearchMapping() mapping.IndexMapping {
 	idxMapping.AddDocumentMapping("post", postMapping)
 	idxMapping.AddDocumentMapping("about", aboutMapping)
 	idxMapping.TypeField = "type"
-	idxMapping.DefaultMapping = bleve.NewDocumentMapping()
-	idxMapping.DefaultMapping.Enabled = false
+	// Keep DefaultMapping enabled so the _all composite field works for
+	// type-routed documents. Unrecognized types (contact, vote, etc.) are
+	// filtered out by extractSearchDoc before reaching bleve.
 
 	return idxMapping
 }
