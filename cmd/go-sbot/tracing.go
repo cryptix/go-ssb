@@ -28,8 +28,7 @@ func setupOTelTracing(ctx context.Context) (func(), error) {
 
 	res, err := resource.Merge(
 		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
+		resource.NewSchemaless(
 			semconv.ServiceName("go-sbot"),
 			semconv.ServiceVersion(Version),
 		),
