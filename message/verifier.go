@@ -30,6 +30,15 @@ func NewVerificationRouter(rxlog *multimsg.WrappedLog, feeds *roaring.MultiLog, 
 	}, nil
 }
 
+// SetForkHandler sets a callback that is invoked whenever a feed fork is
+// detected during message verification. The handler receives the existing
+// (stored) message and the conflicting incoming message.
+func (vs *VerificationRouter) SetForkHandler(h ForkHandler) {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+	vs.forkHandler = h
+}
+
 type MargaretSaver struct {
 	*multimsg.WrappedLog
 }
@@ -61,6 +70,8 @@ type VerificationRouter struct {
 
 	hmacSec *[32]byte
 
+	forkHandler ForkHandler
+
 	mu    *sync.Mutex
 	sinks verifyFanIn
 }
@@ -83,7 +94,7 @@ func (vs *VerificationRouter) GetSink(ref refs.FeedRef, complete bool) (Sequence
 		return nil, err
 	}
 
-	snk, err = NewVerifySink(ref, msg, vs.saver, vs.hmacSec)
+	snk, err = NewVerifySink(ref, msg, vs.saver, vs.hmacSec, vs.forkHandler)
 	if err != nil {
 		return nil, err
 	}

@@ -731,6 +731,7 @@ func New(fopts ...Option) (*Sbot, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.setupForkDetection(s.verifyRouter)
 
 	if s.disableLegacyLiveReplication {
 		histOpts = append(histOpts, gossip.WithLive(!s.disableLegacyLiveReplication))

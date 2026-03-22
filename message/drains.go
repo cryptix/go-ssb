@@ -31,6 +31,11 @@ type SequencedVerificationSink interface {
 	VerifyBatch(msgs [][]byte) ([]refs.Message, error)
 }
 
+// ForkHandler is called when a fork is detected during verification.
+// The handler receives the existing message from our log and the conflicting
+// incoming message. Both messages are signature-verified.
+type ForkHandler func(existing, incoming refs.Message)
+
 type SaveMessager interface {
 	Save(refs.Message) error
 }
@@ -40,12 +45,15 @@ type SaveMessager interface {
 // TODO: start and abs could be the same parameter
 // TODO: needs configuration for hmac and what not..
 // => maybe construct those from a (global) ref register where all the suffixes live with their corresponding network configuration?
-func NewVerifySink(who refs.FeedRef, latest refs.Message, saver SaveMessager, hmacKey *[32]byte) (SequencedVerificationSink, error) {
+func NewVerifySink(who refs.FeedRef, latest refs.Message, saver SaveMessager, hmacKey *[32]byte, onFork ...ForkHandler) (SequencedVerificationSink, error) {
 	drain := &generalVerifyDrain{
 		who:       who,
 		latestSeq: int64(latest.Seq()),
 		latestMsg: latest,
 		storage:   saver,
+	}
+	if len(onFork) > 0 && onFork[0] != nil {
+		drain.forkHandler = onFork[0]
 	}
 	switch who.Algo() {
 	case refs.RefAlgoFeedSSB1:
@@ -153,7 +161,8 @@ type generalVerifyDrain struct {
 	latestSeq int64
 	latestMsg refs.Message
 
-	storage SaveMessager
+	storage     SaveMessager
+	forkHandler ForkHandler
 }
 
 func (ld *generalVerifyDrain) Seq() int64 {
@@ -178,6 +187,10 @@ func (ld *generalVerifyDrain) Verify(msg []byte) error {
 	if err != nil {
 		if err == errSkip {
 			return nil
+		}
+		var forkErr *ErrForkDetected
+		if errors.As(err, &forkErr) && ld.forkHandler != nil {
+			ld.forkHandler(forkErr.Existing, forkErr.Incoming)
 		}
 		return err
 	}
@@ -212,6 +225,10 @@ func (ld *generalVerifyDrain) VerifyBatch(msgs [][]byte) ([]refs.Message, error)
 			if err == errSkip {
 				continue
 			}
+			var forkErr *ErrForkDetected
+			if errors.As(err, &forkErr) && ld.forkHandler != nil {
+				ld.forkHandler(forkErr.Existing, forkErr.Incoming)
+			}
 			return verified, err
 		}
 
@@ -223,6 +240,24 @@ func (ld *generalVerifyDrain) VerifyBatch(msgs [][]byte) ([]refs.Message, error)
 }
 
 var errSkip = errors.New("ValidateNext: already got message")
+
+// ErrForkDetected is returned when a fork is detected: a verified incoming
+// message conflicts with our stored message at the same sequence.
+type ErrForkDetected struct {
+	Existing refs.Message // the message we already have
+	Incoming refs.Message // the conflicting incoming message
+	Reason   string       // "same-seq-different-key" or "previous-hash-mismatch"
+}
+
+func (e *ErrForkDetected) Error() string {
+	return fmt.Sprintf("fork detected (%s) for %s at seq %d: existing=%s incoming=%s",
+		e.Reason,
+		e.Existing.Author().ShortSigil(),
+		e.Existing.Seq(),
+		e.Existing.Key().ShortSigil(),
+		e.Incoming.Key().ShortSigil(),
+	)
+}
 
 // ValidateNext checks the author stays the same across the feed,
 // that he previous hash is correct and that the sequence number is increasing correctly
@@ -244,11 +279,18 @@ func ValidateNext(current, next refs.Message) error {
 	}
 
 	if currSeq+1 != nextSeq {
-		shouldSkip := next.Seq() <= currSeq
-		if shouldSkip {
+		if next.Seq() <= currSeq {
+			// Check for fork: same seq but different key
+			if next.Seq() == currSeq && !current.Key().Equal(next.Key()) {
+				return &ErrForkDetected{
+					Existing: current,
+					Incoming: next,
+					Reason:   "same-seq-different-key",
+				}
+			}
 			return errSkip
 		}
-		return fmt.Errorf("ValidateNext(%s:%d): next.seq(%d) != curr.seq+1 (skip: %v)", author.ShortSigil(), currSeq, nextSeq, shouldSkip)
+		return fmt.Errorf("ValidateNext(%s:%d): next.seq(%d) != curr.seq+1 (skip: %v)", author.ShortSigil(), currSeq, nextSeq, false)
 	}
 
 	currKey := current.Key()
@@ -261,12 +303,13 @@ func ValidateNext(current, next refs.Message) error {
 		)
 	}
 	if !currKey.Equal(*prev) {
-		return fmt.Errorf("ValidateNext(%s:%d): previous compare failed expected:%s incoming:%s",
-			author.String(),
-			currSeq,
-			current.Key().String(),
-			next.Previous().String(),
-		)
+		// The incoming message at currSeq+1 chains to a different message at
+		// currSeq than the one we have. This is evidence of a fork.
+		return &ErrForkDetected{
+			Existing: current,
+			Incoming: next,
+			Reason:   "previous-hash-mismatch",
+		}
 	}
 
 	return nil

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"go.mindeco.de/log"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/ssbc/go-muxrpc/v3"
 	margaret "github.com/ssbc/margaret/v2"
@@ -24,6 +25,7 @@ import (
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/internal/statematrix"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
+	"github.com/ssbc/go-ssb/internal/tracing"
 	"github.com/ssbc/go-ssb/message"
 	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/plugins/gossip"
@@ -162,6 +164,12 @@ func (h *MUXRPCHandler) Loop(ctx context.Context, tx *muxrpc.ByteSink, rx *muxrp
 		return
 	}
 
+	ctx, loopSpan := tracing.Tracer.Start(ctx, "ssb.ebt.loop",
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(tracing.AttrPeerID.String(peer.ShortSigil())),
+	)
+	defer loopSpan.End()
+
 	session := h.Sessions.Started(ctx, remoteAddr, peer, tx)
 
 	peerLogger := log.With(h.info, "r", peer.ShortSigil())
@@ -235,6 +243,14 @@ func (h *MUXRPCHandler) Loop(ctx context.Context, tx *muxrpc.ByteSink, rx *muxrp
 			return
 		}
 
+		_, flushSpan := tracing.Tracer.Start(ctx, "ssb.ebt.flush",
+			trace.WithAttributes(
+				tracing.AttrPeerID.String(peer.ShortSigil()),
+				tracing.AttrEBTMessagesInBatch.Int(len(pending)),
+			),
+		)
+		defer flushSpan.End()
+
 		// Group by author for per-feed verification.
 		byAuthor := make(map[string][]int)
 		authorOrder := make([]string, 0)
@@ -246,7 +262,10 @@ func (h *MUXRPCHandler) Loop(ctx context.Context, tx *muxrpc.ByteSink, rx *muxrp
 			byAuthor[key] = append(byAuthor[key], i)
 		}
 
+		flushSpan.SetAttributes(tracing.AttrEBTAuthorsInBatch.Int(len(authorOrder)))
+
 		ebtUpdates := make([]statematrix.ObservedFeed, 0, len(pending))
+		totalVerified := 0
 
 		for _, authorKey := range authorOrder {
 			indices := byAuthor[authorKey]
@@ -265,6 +284,7 @@ func (h *MUXRPCHandler) Loop(ctx context.Context, tx *muxrpc.ByteSink, rx *muxrp
 
 			verified, verifyErr := vsnk.VerifyBatch(raws)
 			if len(verified) > 0 {
+				totalVerified += len(verified)
 				if _, saveErr := h.verify.SaveBatch(verified); saveErr != nil {
 					h.check(saveErr)
 					continue
@@ -282,9 +302,15 @@ func (h *MUXRPCHandler) Loop(ctx context.Context, tx *muxrpc.ByteSink, rx *muxrp
 				})
 			}
 			if verifyErr != nil {
+				flushSpan.RecordError(verifyErr)
 				h.check(verifyErr)
 			}
 		}
+
+		flushSpan.SetAttributes(
+			tracing.AttrEBTVerifiedCount.Int(totalVerified),
+			tracing.AttrEBTSavedCount.Int(len(ebtUpdates)),
+		)
 
 		// ACK: update our frontier directly after persist.
 		// CombinedIndex will also call Fill (idempotent), but we

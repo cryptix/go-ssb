@@ -50,6 +50,18 @@ var (
 
 	// Index attributes
 	AttrIndexName = attribute.Key("ssb.index.name")
+
+	// EBT replication attributes
+	AttrEBTAuthorsInBatch = attribute.Key("ssb.ebt.authors_in_batch")
+	AttrEBTMessagesInBatch = attribute.Key("ssb.ebt.messages_in_batch")
+	AttrEBTVerifiedCount  = attribute.Key("ssb.ebt.verified_count")
+	AttrEBTSavedCount     = attribute.Key("ssb.ebt.saved_count")
+
+	// Fork detection attributes
+	AttrForkAuthor  = attribute.Key("ssb.fork.author")
+	AttrForkSeq     = attribute.Key("ssb.fork.seq")
+	AttrForkLeftKey  = attribute.Key("ssb.fork.left_key")
+	AttrForkRightKey = attribute.Key("ssb.fork.right_key")
 )
 
 // WithQueryOp returns a SpanStartOption that sets the query operation attribute.
