@@ -10,8 +10,11 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/ssbc/go-muxrpc/v3"
 	refs "github.com/ssbc/go-ssb-refs"
+	"github.com/ssbc/go-ssb/internal/tracing"
 	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/query"
 	"github.com/ssbc/go-ssb/repo"
@@ -32,6 +35,10 @@ type kvWithSeq struct {
 }
 
 func (h getSubsetHandler) HandleSource(ctx context.Context, req *muxrpc.Request, sink *muxrpc.ByteSink) error {
+	ctx, span := tracing.Tracer.Start(ctx, "ssb.rpc.getSubset",
+		trace.WithSpanKind(trace.SpanKindServer),
+	)
+	defer span.End()
 
 	var (
 		args []json.RawMessage
@@ -41,6 +48,7 @@ func (h getSubsetHandler) HandleSource(ctx context.Context, req *muxrpc.Request,
 
 	err := json.Unmarshal(req.RawArgs, &args)
 	if err != nil {
+		span.RecordError(err)
 		return err
 	}
 	nArgs := len(args)
@@ -50,12 +58,14 @@ func (h getSubsetHandler) HandleSource(ctx context.Context, req *muxrpc.Request,
 
 	err = json.Unmarshal(args[0], &arg)
 	if err != nil {
+		span.RecordError(err)
 		return err
 	}
 
 	if nArgs > 1 {
 		err = json.Unmarshal(args[1], &opts)
 		if err != nil {
+			span.RecordError(err)
 			return err
 		}
 	} else { // set defaults
@@ -65,6 +75,7 @@ func (h getSubsetHandler) HandleSource(ctx context.Context, req *muxrpc.Request,
 
 	resulting, err := h.queryPlaner.QuerySubsetBitmap(ctx, arg)
 	if err != nil {
+		span.RecordError(err)
 		return fmt.Errorf("failed to send query result to peer: %w", err)
 	}
 
@@ -87,6 +98,7 @@ func (h getSubsetHandler) HandleSource(ctx context.Context, req *muxrpc.Request,
 	// instead of receive log sequence. This gives causal ordering (newest-authored
 	// first) rather than receive ordering (last-replicated first).
 	if h.seqResolver != nil {
+		_, sortSpan := tracing.Tracer.Start(ctx, "ssb.rpc.getSubset.sort")
 		sorted, err := h.seqResolver.SortAndFilterBitmap(
 			resulting,
 			repo.SortByClaimed,
@@ -94,8 +106,11 @@ func (h getSubsetHandler) HandleSource(ctx context.Context, req *muxrpc.Request,
 			opts.Descending,
 		)
 		if err != nil {
+			sortSpan.RecordError(err)
+			sortSpan.End()
 			return fmt.Errorf("failed to sort results by claimed timestamp: %w", err)
 		}
+		sortSpan.End()
 
 		// Cursor: afterSeq is an rxSeq from a previous page. Since results are
 		// now sorted by claimed timestamp (not rxSeq), we find its position in
@@ -140,9 +155,12 @@ func (h getSubsetHandler) HandleSource(ctx context.Context, req *muxrpc.Request,
 			}
 		}
 
+		_, emitSpan := tracing.Tracer.Start(ctx, "ssb.rpc.getSubset.emit")
 		count := 0
 		for i := startIdx; i < len(sorted); i++ {
 			if err := h.emitMessage(sorted[i].Seq, opts.Keys, &buf, enc, sink); err != nil {
+				emitSpan.RecordError(err)
+				emitSpan.End()
 				return err
 			}
 			count++
@@ -150,15 +168,19 @@ func (h getSubsetHandler) HandleSource(ctx context.Context, req *muxrpc.Request,
 				break
 			}
 		}
+		emitSpan.SetAttributes(tracing.AttrResultCount.Int(count))
+		emitSpan.End()
+		span.SetAttributes(tracing.AttrResultCount.Int(count))
 
 		sink.Close()
 		return nil
 	}
 
 	// Fallback: no SequenceResolver, walk bitmap by receive log sequence.
+	_, emitSpan := tracing.Tracer.Start(ctx, "ssb.rpc.getSubset.emit")
+	emitCount := 0
 	if opts.Descending {
 		vals := resulting.ToArray()
-		count := 0
 		for i := len(vals) - 1; i >= 0; i-- {
 			v := vals[i]
 
@@ -167,17 +189,18 @@ func (h getSubsetHandler) HandleSource(ctx context.Context, req *muxrpc.Request,
 			}
 
 			if err := h.emitMessage(int64(v), opts.Keys, &buf, enc, sink); err != nil {
+				emitSpan.RecordError(err)
+				emitSpan.End()
 				return err
 			}
 
-			count++
-			if pageLimit > 0 && count >= pageLimit {
+			emitCount++
+			if pageLimit > 0 && emitCount >= pageLimit {
 				break
 			}
 		}
 	} else {
 		it := resulting.NewIterator()
-		count := 0
 		for i := 0; i < resulting.GetCardinality(); i++ {
 			v := it.Next()
 
@@ -186,15 +209,20 @@ func (h getSubsetHandler) HandleSource(ctx context.Context, req *muxrpc.Request,
 			}
 
 			if err := h.emitMessage(int64(v), opts.Keys, &buf, enc, sink); err != nil {
+				emitSpan.RecordError(err)
+				emitSpan.End()
 				return err
 			}
 
-			count++
-			if pageLimit > 0 && count >= pageLimit {
+			emitCount++
+			if pageLimit > 0 && emitCount >= pageLimit {
 				break
 			}
 		}
 	}
+	emitSpan.SetAttributes(tracing.AttrResultCount.Int(emitCount))
+	emitSpan.End()
+	span.SetAttributes(tracing.AttrResultCount.Int(emitCount))
 
 	sink.Close()
 	return nil

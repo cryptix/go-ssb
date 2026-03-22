@@ -9,9 +9,12 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/ssbc/go-ssb"
 	"github.com/ssbc/go-ssb/internal/mutil"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
+	"github.com/ssbc/go-ssb/internal/tracing"
 	"github.com/ssbc/go-ssb/message/multimsg"
 
 	"github.com/ssbc/go-muxrpc/v3"
@@ -28,9 +31,15 @@ type getTangleHandler struct {
 }
 
 func (h getTangleHandler) HandleAsync(ctx context.Context, req *muxrpc.Request) (interface{}, error) {
+	ctx, span := tracing.Tracer.Start(ctx, "ssb.rpc.getTangle",
+		trace.WithSpanKind(trace.SpanKindServer),
+	)
+	defer span.End()
+
 	var mrs []refs.MessageRef
 	err := json.Unmarshal(req.RawArgs, &mrs)
 	if err != nil {
+		span.RecordError(err)
 		return nil, err
 	}
 
@@ -61,8 +70,10 @@ func (h getTangleHandler) HandleAsync(ctx context.Context, req *muxrpc.Request) 
 		vals = append(vals, mm.Message.ValueContentJSON())
 	}
 	if err := qry.Err(); err != nil {
+		span.RecordError(err)
 		return nil, fmt.Errorf("getTangle: failed to read thread msgs: %w", err)
 	}
 
+	span.SetAttributes(tracing.AttrResultCount.Int(len(vals)))
 	return vals, nil
 }
