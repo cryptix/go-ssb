@@ -94,24 +94,32 @@ Validation: `Left.Author() == Right.Author()`, `Left.Seq() == Right.Seq()`,
 
 ## Compact Binary Encoding
 
-Frontiers could reference hundreds of feeds. The structure is very regular:
-sorted list of `(32-byte pubkey, varint seq)` pairs.
+In practice, frontiers are scoped to a specific concern — not the whole
+network. Three concrete shapes:
+
+| Frontier scope | Typical feeds | Example |
+|---|---|---|
+| **Social (follows)** | ~50-100 | "Has my timeline changed since last render?" |
+| **Thread (tangle)** | ~2-20 | "Has this conversation advanced?" |
+| **git-ssb repo** | ~3-30 | "Any new commits/issues/PRs since last CI?" |
+
+All well under 100 feeds. At 100 feeds with average seq ~5000:
+- Uncompressed: `~3.4KB` — fits in a single SSB message
+- Wire format is sorted `(pubkey, varint seq)` pairs
+- Vector clock comparison is O(n) where n < 100 — essentially free
+
+This means frontiers can be **published** as SSB messages: "this is the
+worldview my computation used." A git-ssb CI bot can publish its frontier
+alongside build results. A thread summary can declare which messages it saw.
 
 ### Wire Format
 
 ```
 [count: varint]                           # number of feeds
 for each feed (sorted by raw pubkey bytes):
-    [pubkey: 32 bytes]                    # raw ed25519 key
+    [algo + pubkey: varint-prefixed]      # feed identity
     [seq: varint]                         # feed sequence number
 ```
-
-For 500 feeds at average seq ~5000:
-- Uncompressed: `4 + 500 × (32 + 2) = ~17KB`
-- With zstd/gzip on the sorted binary blob: well under 10KB
-
-Small enough to embed in an SSB message if you wanted to publish a verifiable
-"this is the worldview my computation used."
 
 ### Relationship to Existing NetworkFrontier
 
@@ -177,15 +185,24 @@ type FeedAdvance struct {
 
 ## Criticisms and Open Questions
 
-### 1. Size at Scale
+### 1. Scoping: Which Feeds Belong in a Frontier?
 
-A node following 5000 feeds produces a 170KB frontier. This is fine for local
-storage and RPC, but too large for embedding in SSB messages (max ~8KB for
-legacy format). Options:
-- **Subset frontiers**: Only include feeds relevant to the computation. A
-  timeline query touching 150 feeds produces a ~5KB frontier.
-- **Bloom filter summary**: Lossy but compact "did this frontier probably
-  include feed X at seq ≥ Y?" for gossip protocol use.
+A frontier must be **scoped** — it tracks only the feeds relevant to a
+specific concern. Including unrelated feeds wastes space and makes
+`HappenedBefore` return false negatives (an unrelated feed advancing
+doesn't invalidate a thread frontier).
+
+Scoping strategies:
+- **Social frontier**: `graph.Follows(me)` → all feeds I follow
+- **Thread frontier**: Participants in a tangle (from tangle multilog)
+- **Repo frontier**: Contributors listed in the git-ssb repo metadata
+- **Query frontier**: The `authors` bitmap from a subset query defines
+  which feeds the result depends on
+
+The `SubsetPlaner` already knows which feeds a query touches (via author
+bitmaps). A natural extension: after evaluating a query, also return the
+frontier of feeds that contributed to the result. This makes query results
+self-describing: "here's the data, and here's exactly when it becomes stale."
 
 ### 2. Feed Algorithm Support
 
