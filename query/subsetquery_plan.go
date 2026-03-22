@@ -6,6 +6,7 @@ package query
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/dgraph-io/sroar"
@@ -99,6 +100,11 @@ func (sp *SubsetPlaner) QuerySubsetBitmap(ctx context.Context, qry SubsetOperati
 	)
 	defer span.End()
 
+	// Attach full query as JSON for debuggability
+	if qryJSON, err := json.Marshal(qry); err == nil {
+		span.SetAttributes(tracing.AttrQueryJSON.String(string(qryJSON)))
+	}
+
 	result, err := combineBitmaps(ctx, sp, qry)
 	if err != nil {
 		span.RecordError(err)
@@ -176,6 +182,39 @@ func feedSetToBitmap(sp *SubsetPlaner, feeds *ssb.StrFeedSet) (*sroar.Bitmap, er
 }
 
 func combineBitmaps(ctx context.Context, sp *SubsetPlaner, qry SubsetOperation) (*sroar.Bitmap, error) {
+	ctx, span := tracing.Tracer.Start(ctx, "ssb.query."+qry.operation,
+		tracing.WithQueryOp(qry.operation),
+	)
+	defer span.End()
+
+	// Add operation-specific attributes
+	switch qry.operation {
+	case "author", "mentions", "followedBy", "blockedBy", "friendsBlocks", "hops":
+		if qry.feed != nil {
+			span.SetAttributes(tracing.AttrQueryAuthor.String(qry.feed.ShortSigil()))
+		}
+	case "type":
+		span.SetAttributes(tracing.AttrQueryType.String(qry.string))
+	case "channel":
+		span.SetAttributes(tracing.AttrQueryChannel.String(qry.string))
+	case "search":
+		span.SetAttributes(tracing.AttrSearchQuery.String(qry.string))
+	case "and", "or":
+		span.SetAttributes(tracing.AttrQueryArgs.Int(len(qry.args)))
+	}
+
+	result, err := combineBitmapsInner(ctx, sp, qry)
+	if err != nil {
+		span.RecordError(err)
+		return nil, err
+	}
+	if result != nil {
+		span.SetAttributes(tracing.AttrBitmapCardinality.Int(result.GetCardinality()))
+	}
+	return result, nil
+}
+
+func combineBitmapsInner(ctx context.Context, sp *SubsetPlaner, qry SubsetOperation) (*sroar.Bitmap, error) {
 	switch qry.operation {
 
 	case "author":

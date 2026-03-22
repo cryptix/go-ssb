@@ -40,6 +40,10 @@ var (
 	// Query attributes
 	AttrQueryOp           = attribute.Key("ssb.query.op")
 	AttrQueryType         = attribute.Key("ssb.query.type")
+	AttrQueryAuthor       = attribute.Key("ssb.query.author")
+	AttrQueryChannel      = attribute.Key("ssb.query.channel")
+	AttrQueryArgs         = attribute.Key("ssb.query.args")
+	AttrQueryJSON         = attribute.Key("ssb.query.json")
 	AttrBitmapCardinality = attribute.Key("ssb.bitmap.cardinality")
 	AttrResultCount       = attribute.Key("ssb.result.count")
 	AttrSearchQuery       = attribute.Key("ssb.search.query")
