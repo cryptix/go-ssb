@@ -6,6 +6,7 @@ package query_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"os"
@@ -112,8 +113,8 @@ func TestSubsetQuerySerializing(t *testing.T) {
 		},
 
 		{
-			name:  "not operation",
-			query: query.NewSubsetNotCombination(query.NewSubsetOpByType("post")),
+			name:      "not operation",
+			query:     query.NewSubsetNotCombination(query.NewSubsetOpByType("post")),
 			jsonInput: `{"op":"not","args":[{"op":"type","string":"post"}]}`,
 		},
 
@@ -230,14 +231,14 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 		as string      // nick name
 		c  interface{} // content
 	}{
-		{"arny", refs.NewAboutName(kpArny.ID(), "i'm arny!")},     // 0: about
-		{"arny", refs.NewContactFollow(kpBert.ID())},              // 1: contact
-		{"bert", refs.NewAboutName(kpBert.ID(), "i'm bert!")},     // 2: about
-		{"bert", refs.NewContactFollow(kpArny.ID())},              // 3: contact
-		{"bert", refs.NewAboutName(kpCloe.ID(), "that cloe")},    // 4: about
-		{"cloe", refs.NewAboutName(kpBert.ID(), "iditot")},       // 5: about
-		{"cloe", refs.NewPost("hello, world!")},                   // 6: post (root)
-		{"cloe", refs.NewAboutName(kpCloe.ID(), "i'm cloe!")},    // 7: about
+		{"arny", refs.NewAboutName(kpArny.ID(), "i'm arny!")}, // 0: about
+		{"arny", refs.NewContactFollow(kpBert.ID())},          // 1: contact
+		{"bert", refs.NewAboutName(kpBert.ID(), "i'm bert!")}, // 2: about
+		{"bert", refs.NewContactFollow(kpArny.ID())},          // 3: contact
+		{"bert", refs.NewAboutName(kpCloe.ID(), "that cloe")}, // 4: about
+		{"cloe", refs.NewAboutName(kpBert.ID(), "iditot")},    // 5: about
+		{"cloe", refs.NewPost("hello, world!")},               // 6: post (root)
+		{"cloe", refs.NewAboutName(kpCloe.ID(), "i'm cloe!")}, // 7: about
 	}
 
 	for idx, intro := range testMsgs {
@@ -288,7 +289,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 	t.Run("by author", func(t *testing.T) {
 		r := require.New(t)
 
-		msgs, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, query.NewSubsetOpByAuthor(kpArny.ID()))
+		msgs, err := sp.QuerySubsetMessages(context.TODO(), mainbot.ReceiveLog, query.NewSubsetOpByAuthor(kpArny.ID()))
 		r.NoError(err)
 		r.Len(msgs, 2, "wrong number of resulting messages")
 		r.Equal(testRefs[0], msgs[0])
@@ -298,7 +299,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 	t.Run("by type", func(t *testing.T) {
 		r := require.New(t)
 
-		msgs, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, query.NewSubsetOpByType("post"))
+		msgs, err := sp.QuerySubsetMessages(context.TODO(), mainbot.ReceiveLog, query.NewSubsetOpByType("post"))
 		r.NoError(err)
 		r.Len(msgs, 4, "wrong number of resulting messages (6,8,9,10)")
 	})
@@ -307,7 +308,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 		r := require.New(t)
 
 		qry := query.NewSubsetOrCombination(query.NewSubsetOpByType("contact"), query.NewSubsetOpByType("post"))
-		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		res, err := sp.QuerySubsetMessages(context.TODO(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		r.Len(res, 6, "wrong number of resulting messages (1,3,6,8,9,10)")
 	})
@@ -318,7 +319,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 		r := require.New(t)
 
 		qry := query.NewSubsetOpByTypes("contact", "post")
-		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		res, err := sp.QuerySubsetMessages(context.TODO(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		r.Len(res, 6, "wrong number of resulting messages (1,3,6,8,9,10)")
 	})
@@ -327,7 +328,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 		r := require.New(t)
 
 		qry := query.NewSubsetOpByTypes("post")
-		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		res, err := sp.QuerySubsetMessages(context.TODO(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		r.Len(res, 4, "wrong number of resulting messages (6,8,9,10)")
 	})
@@ -336,7 +337,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 		r := require.New(t)
 
 		qry := query.NewSubsetOpByAuthors(kpArny.ID(), kpCloe.ID())
-		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		res, err := sp.QuerySubsetMessages(context.TODO(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		r.Len(res, 7, "wrong number of resulting messages (arny: 0,1,8; cloe: 5,6,7,10)")
 	})
@@ -348,7 +349,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 			[]refs.FeedRef{kpBert.ID()},
 			[]string{"contact"},
 		)
-		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		res, err := sp.QuerySubsetMessages(context.TODO(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		r.Len(res, 1, "wrong number of resulting messages")
 		r.Equal(testRefs[3], res[0])
@@ -361,7 +362,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 			[]refs.FeedRef{kpArny.ID(), kpCloe.ID()},
 			[]string{"about", "post"},
 		)
-		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		res, err := sp.QuerySubsetMessages(context.TODO(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		// arny: about(0), post(8); cloe: about(5), post(6), about(7), post(10) = 6 msgs
 		r.Len(res, 6, "wrong number of resulting messages")
@@ -374,7 +375,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 			[]refs.FeedRef{kpArny.ID()},
 			nil,
 		)
-		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		res, err := sp.QuerySubsetMessages(context.TODO(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		r.Len(res, 3, "wrong number of resulting messages (0,1,8)")
 	})
@@ -386,7 +387,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 			nil,
 			[]string{"post"},
 		)
-		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		res, err := sp.QuerySubsetMessages(context.TODO(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		r.Len(res, 4, "wrong number of resulting messages (6,8,9,10)")
 	})
@@ -404,7 +405,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 		op, err := sq.ToOperation()
 		r.NoError(err)
 
-		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, op)
+		res, err := sp.QuerySubsetMessages(context.TODO(), mainbot.ReceiveLog, op)
 		r.NoError(err)
 		r.Len(res, 2, "bert has 2 about messages")
 	})
@@ -419,7 +420,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 		op, err := sq.ToOperation()
 		r.NoError(err)
 
-		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, op)
+		res, err := sp.QuerySubsetMessages(context.TODO(), mainbot.ReceiveLog, op)
 		r.NoError(err)
 		r.Len(res, 4, "cloe has 4 messages total (5,6,7,10)")
 	})
@@ -434,7 +435,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 		op, err := sq.ToOperation()
 		r.NoError(err)
 
-		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, op)
+		res, err := sp.QuerySubsetMessages(context.TODO(), mainbot.ReceiveLog, op)
 		r.NoError(err)
 		r.Len(res, 2, "2 contact messages total")
 	})
@@ -455,7 +456,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 		r := require.New(t)
 
 		qry := query.NewSubsetOpByChannel("ssb-dev")
-		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		res, err := sp.QuerySubsetMessages(context.TODO(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		r.Len(res, 2, "two messages in ssb-dev channel (8, 10)")
 	})
@@ -464,7 +465,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 		r := require.New(t)
 
 		qry := query.NewSubsetOpByMention(kpArny.ID())
-		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		res, err := sp.QuerySubsetMessages(context.TODO(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		r.Len(res, 1, "one message mentions arny (9)")
 	})
@@ -475,7 +476,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 		// isRoot should return all messages that are NOT replies (no content.root)
 		// That's: 0,1,2,3,4,5,6,7,8,9 = 10 messages (all except 10 which has root)
 		qry := query.NewSubsetOpIsRoot()
-		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		res, err := sp.QuerySubsetMessages(context.TODO(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		r.Len(res, 10, "10 root messages (all except the reply at index 10)")
 	})
@@ -488,7 +489,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 			query.NewSubsetOpIsRoot(),
 			query.NewSubsetOpByType("post"),
 		)
-		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		res, err := sp.QuerySubsetMessages(context.TODO(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		r.Len(res, 3, "3 root posts (6, 8, 9)")
 	})
@@ -497,7 +498,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 		r := require.New(t)
 
 		qry := query.NewSubsetNotCombination(query.NewSubsetOpByAuthor(kpArny.ID()))
-		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		res, err := sp.QuerySubsetMessages(context.TODO(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		// total 11 msgs minus arny's 3 (0,1,8) = 8
 		r.Len(res, 8, "8 messages not by arny")
@@ -510,7 +511,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 			query.NewSubsetOpByType("post"),
 			query.NewSubsetNotCombination(query.NewSubsetOpByAuthor(kpArny.ID())),
 		)
-		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		res, err := sp.QuerySubsetMessages(context.TODO(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		// posts: 6,8,9,10 minus arny's post 8 = 3
 		r.Len(res, 3, "3 posts not by arny (6, 9, 10)")
@@ -523,7 +524,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 			query.NewSubsetOpByChannel("ssb-dev"),
 			query.NewSubsetOpByAuthor(kpCloe.ID()),
 		)
-		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		res, err := sp.QuerySubsetMessages(context.TODO(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		r.Len(res, 1, "cloe's ssb-dev message (10)")
 	})
@@ -536,7 +537,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 
 		// arny follows bert, so followedBy(arny) = bert's messages
 		qry := query.NewSubsetOpFollowedBy(kpArny.ID())
-		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		res, err := sp.QuerySubsetMessages(context.TODO(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		// bert has messages: 2(about), 3(contact), 4(about), 9(post) = 4 messages
 		r.Len(res, 4, "bert's messages (followed by arny)")
@@ -547,7 +548,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 
 		// bert follows arny, so followedBy(bert) = arny's messages
 		qry := query.NewSubsetOpFollowedBy(kpBert.ID())
-		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		res, err := sp.QuerySubsetMessages(context.TODO(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		// arny has messages: 0(about), 1(contact), 8(post) = 3 messages
 		r.Len(res, 3, "arny's messages (followed by bert)")
@@ -561,7 +562,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 			query.NewSubsetOpFollowedBy(kpArny.ID()),
 			query.NewSubsetOpByType("post"),
 		)
-		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		res, err := sp.QuerySubsetMessages(context.TODO(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		// bert's posts: 9 = 1 post
 		r.Len(res, 1, "bert's posts (arny's timeline)")
@@ -575,7 +576,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 		qry := query.NewSubsetNotCombination(
 			query.NewSubsetOpBlockedBy(kpArny.ID()),
 		)
-		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		res, err := sp.QuerySubsetMessages(context.TODO(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		r.Len(res, 11, "no one is blocked, so all 11 messages returned")
 	})
@@ -585,7 +586,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 
 		// arny's friends (bert) haven't blocked anyone
 		qry := query.NewSubsetOpFriendsBlocks(kpArny.ID())
-		res, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		res, err := sp.QuerySubsetMessages(context.TODO(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		r.Nil(res, "no friends blocks means nil result")
 	})
@@ -600,7 +601,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 		a := assert.New(t)
 
 		// Get the bitmap for all posts
-		bitmap, err := sp.QuerySubsetBitmap(query.NewSubsetOpByType("post"))
+		bitmap, err := sp.QuerySubsetBitmap(context.TODO(), query.NewSubsetOpByType("post"))
 		r.NoError(err)
 		r.NotNil(bitmap)
 
@@ -626,7 +627,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 		r := require.New(t)
 		a := assert.New(t)
 
-		bitmap, err := sp.QuerySubsetBitmap(query.NewSubsetOpByType("post"))
+		bitmap, err := sp.QuerySubsetBitmap(context.TODO(), query.NewSubsetOpByType("post"))
 		r.NoError(err)
 
 		sorted, err := mainbot.SeqResolver.SortAndFilterBitmap(
@@ -655,7 +656,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 			query.NewSubsetOpByType("post"),
 			query.NewSubsetNotCombination(query.NewSubsetOpBlockedBy(kpArny.ID())),
 		)
-		bitmap, err := sp.QuerySubsetBitmap(timelineOp)
+		bitmap, err := sp.QuerySubsetBitmap(context.TODO(), timelineOp)
 		r.NoError(err)
 		r.NotNil(bitmap)
 
@@ -678,7 +679,7 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 		a := assert.New(t)
 
 		// Get all messages sorted by claimed timestamp descending
-		bitmap, err := sp.QuerySubsetBitmap(query.NewSubsetOpByType("about"))
+		bitmap, err := sp.QuerySubsetBitmap(context.TODO(), query.NewSubsetOpByType("about"))
 		r.NoError(err)
 		r.NotNil(bitmap)
 

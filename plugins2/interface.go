@@ -6,8 +6,8 @@ package plugins2
 
 import (
 	"github.com/ssbc/go-ssb"
-	margaret "github.com/ssbc/margaret/v2"
 	"github.com/ssbc/go-ssb/message/multimsg"
+	margaret "github.com/ssbc/margaret/v2"
 )
 
 type AuthMode uint

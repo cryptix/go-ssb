@@ -5,6 +5,7 @@
 package multilogs
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -237,7 +238,7 @@ func (idx *SearchIndex) LastProcessedSeq() int64 {
 }
 
 // Search executes a full-text query and returns a bitmap of matching receive log sequence numbers.
-func (idx *SearchIndex) Search(queryStr string, limit int) (*sroar.Bitmap, error) {
+func (idx *SearchIndex) Search(_ context.Context, queryStr string, limit int) (*sroar.Bitmap, error) {
 	if limit <= 0 {
 		limit = 100
 	}

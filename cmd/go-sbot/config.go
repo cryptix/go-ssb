@@ -93,6 +93,11 @@ func ReadEnvironmentVariables(config *config.SbotConfig) {
 		config.SetPresence("enable-search", true)
 	}
 
+	if val := os.Getenv("SSB_OTEL_ENABLED"); val != "" {
+		config.EnableOTel = readEnvironmentBoolean(val)
+		config.SetPresence("enable-otel", true)
+	}
+
 	if val := os.Getenv("SSB_CONN_FIREWALL_ENABLED"); val != "" {
 		config.EnableFirewall = readEnvironmentBoolean(val)
 		config.SetPresence("promisc", true)

@@ -100,6 +100,10 @@ enable-ebt = false
 promisc = false
 # Disable the UNIX socket RPC interface
 nounixsock = false
+# Enable full-text search indexing using Bleve
+enable-search = false
+# Enable OpenTelemetry tracing (configure endpoint via OTEL_EXPORTER_OTLP_ENDPOINT)
+enable-otel = false
 
 
 
@@ -150,6 +154,8 @@ SSB_PROMETHEUS_ADDRESS="localhost:6078"  // aka debug metrics
 
 SSB_PROMETHEUS_ENABLED=no
 SSB_EBT_ENABLED=no
+SSB_SEARCH_ENABLED=no
+SSB_OTEL_ENABLED=no
 SSB_CONN_FIREWALL_ENABLED=yes // equivalent with --promisc
 SSB_CONN_DISCOVERY_UDP_ENABLED=no
 SSB_CONN_BROADCAST_UDP_ENABLED=no

@@ -43,18 +43,19 @@ var (
 	flagCleanup     bool
 	flagReindex     bool
 	flagWipeIndexes bool
-	flagFSCK     string
-	flagRepair   bool
-	flagFatBot   bool
-	flagHops     uint
-	flagEnAdv    bool
-	flagEnDiscov bool
-	flagPromisc  bool
-	flagNumPeer  uint
-	flagNumRepl  uint
+	flagFSCK        string
+	flagRepair      bool
+	flagFatBot      bool
+	flagHops        uint
+	flagEnAdv       bool
+	flagEnDiscov    bool
+	flagPromisc     bool
+	flagNumPeer     uint
+	flagNumRepl     uint
 
 	flagEnableEBT    bool
 	flagEnableSearch bool
+	flagEnableOTel   bool
 
 	flagDisableUNIXSock bool
 
@@ -120,6 +121,7 @@ func initFlags() {
 
 	flag.BoolVar(&flagEnableEBT, "enable-ebt", false, "enable syncing by using epidemic-broadcast-trees (new code, test with caution)")
 	flag.BoolVar(&flagEnableSearch, "enable-search", false, "enable full-text search indexing using Bleve")
+	flag.BoolVar(&flagEnableOTel, "enable-otel", false, "enable OpenTelemetry tracing (configure endpoint via OTEL_EXPORTER_OTLP_ENDPOINT)")
 
 	flag.BoolVar(&flagDisableUNIXSock, "nounixsock", false, "disable the UNIX socket RPC interface")
 
@@ -255,6 +257,9 @@ func applyConfigValues() {
 	if UseConfigValue("enable-search") {
 		flagEnableSearch = (bool)(config.EnableSearch)
 	}
+	if UseConfigValue("enable-otel") {
+		flagEnableOTel = (bool)(config.EnableOTel)
+	}
 	if UseConfigValue("nounixsock") {
 		flagDisableUNIXSock = (bool)(config.NoUnixSocket)
 	}
@@ -322,6 +327,15 @@ func runSbot() error {
 	ak, err := base64.StdEncoding.DecodeString(appKey)
 	if err != nil {
 		return fmt.Errorf("invalid application key/shs-cap: %w", err)
+	}
+
+	if flagEnableOTel {
+		shutdownTracing, err := setupOTelTracing(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to setup OpenTelemetry tracing: %w", err)
+		}
+		defer shutdownTracing()
+		level.Info(log).Log("event", "otel-tracing", "msg", "OpenTelemetry tracing enabled")
 	}
 
 	startDebug()

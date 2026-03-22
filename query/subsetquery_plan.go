@@ -5,6 +5,7 @@
 package query
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/dgraph-io/sroar"
@@ -13,6 +14,7 @@ import (
 	"github.com/ssbc/go-ssb"
 	"github.com/ssbc/go-ssb/graph"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
+	"github.com/ssbc/go-ssb/internal/tracing"
 	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/multilogs"
 	"github.com/ssbc/go-ssb/repo"
@@ -23,7 +25,7 @@ import (
 
 // Searcher is implemented by full-text search indexes that return results as bitmaps.
 type Searcher interface {
-	Search(query string, limit int) (*sroar.Bitmap, error)
+	Search(ctx context.Context, query string, limit int) (*sroar.Bitmap, error)
 }
 
 type SubsetPlaner struct {
@@ -91,13 +93,26 @@ func (sp *SubsetPlaner) WithSearch(s Searcher) *SubsetPlaner {
 }
 
 // QuerySubsetBitmap evaluates the passed SubsetOperation and returns a bitmap which maps to messages in the receive log.
-func (sp *SubsetPlaner) QuerySubsetBitmap(qry SubsetOperation) (*sroar.Bitmap, error) {
-	return combineBitmaps(sp, qry)
+func (sp *SubsetPlaner) QuerySubsetBitmap(ctx context.Context, qry SubsetOperation) (*sroar.Bitmap, error) {
+	ctx, span := tracing.Tracer.Start(ctx, "ssb.query.subset",
+		tracing.WithQueryOp(qry.operation),
+	)
+	defer span.End()
+
+	result, err := combineBitmaps(ctx, sp, qry)
+	if err != nil {
+		span.RecordError(err)
+		return nil, err
+	}
+	if result != nil {
+		span.SetAttributes(tracing.AttrBitmapCardinality.Int(result.GetCardinality()))
+	}
+	return result, nil
 }
 
 // QuerySubsetMessages evaluates the passed SubsetOperation and returns a slice of messages
-func (sp *SubsetPlaner) QuerySubsetMessages(rxLog margaret.Log[*multimsg.MultiMessage], qry SubsetOperation) ([]refs.Message, error) {
-	resulting, err := combineBitmaps(sp, qry)
+func (sp *SubsetPlaner) QuerySubsetMessages(ctx context.Context, rxLog margaret.Log[*multimsg.MultiMessage], qry SubsetOperation) ([]refs.Message, error) {
+	resulting, err := combineBitmaps(ctx, sp, qry)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +175,7 @@ func feedSetToBitmap(sp *SubsetPlaner, feeds *ssb.StrFeedSet) (*sroar.Bitmap, er
 	return result, nil
 }
 
-func combineBitmaps(sp *SubsetPlaner, qry SubsetOperation) (*sroar.Bitmap, error) {
+func combineBitmaps(ctx context.Context, sp *SubsetPlaner, qry SubsetOperation) (*sroar.Bitmap, error) {
 	switch qry.operation {
 
 	case "author":
@@ -260,7 +275,7 @@ func combineBitmaps(sp *SubsetPlaner, qry SubsetOperation) (*sroar.Bitmap, error
 			return nil, fmt.Errorf("sbot: not operation requires exactly one argument")
 		}
 		// get the child bitmap to exclude
-		childBitmap, err := combineBitmaps(sp, qry.args[0])
+		childBitmap, err := combineBitmaps(ctx, sp, qry.args[0])
 		if err != nil {
 			return nil, fmt.Errorf("not operation failed: %w", err)
 		}
@@ -352,7 +367,7 @@ func combineBitmaps(sp *SubsetPlaner, qry SubsetOperation) (*sroar.Bitmap, error
 		if sp.search == nil {
 			return nil, fmt.Errorf("sbot: search index not configured")
 		}
-		return sp.search.Search(qry.string, 1000)
+		return sp.search.Search(ctx, qry.string, 1000)
 
 	case "or", "and":
 		if len(qry.args) == 0 {
@@ -360,7 +375,7 @@ func combineBitmaps(sp *SubsetPlaner, qry SubsetOperation) (*sroar.Bitmap, error
 		}
 
 		// run the first operation and use it's result as the workBitmap the rest will be applied to
-		workBitmap, err := combineBitmaps(sp, qry.args[0])
+		workBitmap, err := combineBitmaps(ctx, sp, qry.args[0])
 		if err != nil {
 			return nil, fmt.Errorf("boolean (%s) operation %d of %d failed: %w", qry.operation, 1, len(qry.args), err)
 		}
@@ -377,7 +392,7 @@ func combineBitmaps(sp *SubsetPlaner, qry SubsetOperation) (*sroar.Bitmap, error
 		for i, op := range qry.args[1:] {
 
 			// get the bitmap for the current operation
-			opsBitmap, err := combineBitmaps(sp, op)
+			opsBitmap, err := combineBitmaps(ctx, sp, op)
 			if err != nil {
 				return nil, fmt.Errorf("boolean (%s) operation %d of %d failed: %w", qry.operation, i+1, len(qry.args)-1, err)
 			}

@@ -50,7 +50,6 @@ import (
 	"github.com/ssbc/go-ssb/plugins/conn"
 	"github.com/ssbc/go-ssb/plugins/ebt"
 	"github.com/ssbc/go-ssb/plugins/friends"
-	"github.com/ssbc/go-ssb/query"
 	"github.com/ssbc/go-ssb/plugins/get"
 	"github.com/ssbc/go-ssb/plugins/gossip"
 	"github.com/ssbc/go-ssb/plugins/groups"
@@ -66,6 +65,7 @@ import (
 	"github.com/ssbc/go-ssb/plugins2/names"
 	"github.com/ssbc/go-ssb/private"
 	"github.com/ssbc/go-ssb/private/keys"
+	"github.com/ssbc/go-ssb/query"
 	"github.com/ssbc/go-ssb/repo"
 )
 
@@ -153,10 +153,10 @@ type Sbot struct {
 	mlogIndicies map[string]*roaring.MultiLog
 	simpleIndex  map[string]mindexes.Index[int64]
 
-	liveIndexUpdates       bool
-	skipConsistencyCheck   bool
-	indexStateMu     sync.Mutex
-	indexStates      map[string]string
+	liveIndexUpdates     bool
+	skipConsistencyCheck bool
+	indexStateMu         sync.Mutex
+	indexStates          map[string]string
 
 	ebtState   *statematrix.StateMatrix
 	ebtHandler *ebt.MUXRPCHandler

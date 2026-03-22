@@ -6,6 +6,7 @@ package migrate
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -422,7 +423,7 @@ func getMessages(bot *sbot.Sbot, main refs.FeedRef, msgtype string) ([]refs.Mess
 		query.NewSubsetOpByType(msgtype),
 	)
 	planner := query.NewSubsetPlaner(bot.Users, bot.ByType)
-	msgs, err := planner.QuerySubsetMessages(bot.ReceiveLog, q)
+	msgs, err := planner.QuerySubsetMessages(context.TODO(), bot.ReceiveLog, q)
 	inform(bot.ReceiveLog.Seq(), "messages in receive log")
 	if err != nil {
 		return []refs.Message{}, e("failed to query subset", err)

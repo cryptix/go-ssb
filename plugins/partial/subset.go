@@ -63,7 +63,7 @@ func (h getSubsetHandler) HandleSource(ctx context.Context, req *muxrpc.Request,
 		opts.Keys = true
 	}
 
-	resulting, err := h.queryPlaner.QuerySubsetBitmap(arg)
+	resulting, err := h.queryPlaner.QuerySubsetBitmap(ctx, arg)
 	if err != nil {
 		return fmt.Errorf("failed to send query result to peer: %w", err)
 	}

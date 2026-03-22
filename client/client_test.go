@@ -593,4 +593,3 @@ func TestFriendsBlocks(t *testing.T) {
 	r.NoError(err)
 	r.NotNil(src)
 }
-

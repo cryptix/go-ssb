@@ -33,6 +33,88 @@ Want to contribute patches to go-ssb? Read the [developer documentation](https:/
 * [x] [Epidemic Broadcast Trees (EBT)](https://github.com/dominictarr/epidemic-broadcast-trees) feed replication in beta (use `go-sbot -enable-ebt`)
 * [x] Invite mechanics ([peer-invites](https://github.com/ssbc/ssb-peer-invites) partially done, too. See [Issue 45](https://github.com/ssbc/go-ssb/issues/45) for more.)
 
+## Observability
+
+go-ssb has built-in support for [OpenTelemetry](https://opentelemetry.io/) tracing and Prometheus metrics.
+
+### Prometheus Metrics
+
+Metrics are exposed at `http://localhost:6078/metrics` when running with `-debugAddr localhost:6078` (or your chosen debug address). These include connection counts, bytes tx/rx, and repository stats.
+
+### OpenTelemetry Tracing
+
+Tracing is available via the standard OTel SDK with an OTLP exporter. When tracing is not enabled, all calls are no-ops with zero overhead.
+
+**Enable tracing** via any of:
+
+```bash
+# Flag
+go-sbot -enable-otel
+
+# Environment variable
+SSB_OTEL_ENABLED=yes go-sbot
+
+# Config file (~/.ssb-go/config.toml)
+# [go-sbot]
+# enable-otel = true
+```
+
+The OTLP exporter endpoint is controlled by the standard `OTEL_EXPORTER_OTLP_ENDPOINT` variable (defaults to `http://localhost:4318`).
+
+**Quick start with Jaeger:**
+
+```bash
+# 1. Run Jaeger (all-in-one, with OTLP receiver)
+docker run -d --name jaeger \
+  -p 16686:16686 \
+  -p 4318:4318 \
+  jaegertracing/all-in-one:latest
+
+# 2. Start go-sbot with tracing enabled
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 go-sbot -enable-otel
+
+# 3. Open Jaeger UI
+open http://localhost:16686
+# Search for service "go-sbot"
+```
+
+**What you'll see in traces:**
+
+| Span | Shows you |
+|---|---|
+| `ssb.query.subset` | Query execution: which bitmap operations ran, result cardinality, time per operation |
+| `ssb.ebt.session` | EBT sync sessions: messages received per peer, frontier exchanges, verification time |
+| `ssb.gossip.fetch` | Legacy gossip: per-feed fetch with batch verification and storage timing |
+| `ssb.index.batch` | Index processing: batch sizes, which index is the bottleneck |
+
+All SSB-specific attributes use the `ssb.` prefix (e.g. `ssb.peer.id`, `ssb.feed`, `ssb.query.op`, `ssb.frontier.size`). See [`internal/tracing/tracing.go`](./internal/tracing/tracing.go) for the full list.
+
+### Frontiers (Vector Clocks)
+
+go-ssb tracks **frontiers** — vector clocks over SSB feeds that represent "what data has this node seen?" Frontiers enable:
+
+- **Cache validity**: "Has my timeline changed since last render?" → compare frontiers with `HappenedBefore()`
+- **Incremental updates**: `Diff()` tells you exactly which feeds advanced and by how many messages
+- **Fork detection**: A `ForkProof` pairs a frontier with two conflicting messages from the same feed
+
+Frontiers are scoped to a concern (your follows, a thread's participants, a git-ssb repo's contributors) — typically under 100 feeds, small enough to embed in an SSB message.
+
+```go
+// Check if a cached result is still valid
+if cachedFrontier.HappenedBefore(currentFrontier) {
+    // result is still good — no new data in the feeds that matter
+} else {
+    // something changed — Diff() tells you what
+    changes := cachedFrontier.Diff(currentFrontier)
+    for _, adv := range changes {
+        fmt.Printf("feed %s advanced from %d to %d\n",
+            adv.Feed.ShortSigil(), adv.OldSeq, adv.NewSeq)
+    }
+}
+```
+
+See [`docs/design-frontier-vector-clock.md`](./docs/design-frontier-vector-clock.md) for the full design and [`docs/design-otel-tracing.md`](./docs/design-otel-tracing.md) for how frontiers integrate with tracing.
+
 ## Installation
 
 You can install the project using Golang's [install command](https://golang.org/cmd/go/#hdr-Compile_and_install_packages_and_dependencies) which will place the commands into the directory pointed to by the GOBIN environment variable.

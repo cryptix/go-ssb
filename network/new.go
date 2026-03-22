@@ -91,10 +91,10 @@ type Node struct {
 	latency    metrics.Histogram
 
 	// "ssb-ws"
-	httpLis        net.Listener
-	httpServer     *http.Server
-	httpHandlerMu  sync.Mutex
-	httpHandler    http.Handler
+	httpLis       net.Listener
+	httpServer    *http.Server
+	httpHandlerMu sync.Mutex
+	httpHandler   http.Handler
 }
 
 func New(opts Options) (*Node, error) {

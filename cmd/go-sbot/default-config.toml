@@ -43,6 +43,8 @@ promisc = false
 nounixsock = false
 # Enable full-text search indexing using Bleve
 enable-search = false
+# Enable OpenTelemetry tracing (configure endpoint via OTEL_EXPORTER_OTLP_ENDPOINT)
+enable-otel = false
 
 
 

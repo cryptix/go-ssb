@@ -27,8 +27,8 @@ type testKeyPair struct {
 	private ed25519.PrivateKey
 }
 
-func (kp testKeyPair) ID() refs.FeedRef            { return kp.feed }
-func (kp testKeyPair) Secret() ed25519.PrivateKey   { return kp.private[:] }
+func (kp testKeyPair) ID() refs.FeedRef           { return kp.feed }
+func (kp testKeyPair) Secret() ed25519.PrivateKey { return kp.private[:] }
 
 func newTestKeyPair(r io.Reader) (testKeyPair, error) {
 	if r == nil {

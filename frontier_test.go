@@ -274,8 +274,8 @@ type fakeMessage struct {
 	key    refs.MessageRef
 }
 
-func (m *fakeMessage) Seq() int64                       { return m.seq }
-func (m *fakeMessage) Author() refs.FeedRef             { return m.author }
+func (m *fakeMessage) Seq() int64                        { return m.seq }
+func (m *fakeMessage) Author() refs.FeedRef              { return m.author }
 func (m *fakeMessage) Key() refs.MessageRef              { return m.key }
 func (m *fakeMessage) Previous() *refs.MessageRef        { return nil }
 func (m *fakeMessage) Claimed() time.Time                { return time.Now() }
