@@ -44,6 +44,14 @@ func newNamesHandler(l log.Logger, as aboutStore) muxrpc.Handler {
 		log: l,
 		as:  as,
 	})
+	mux.RegisterAsync(muxrpc.Method{"names", "getAll"}, hGetAllWithImages{
+		log: l,
+		as:  as,
+	})
+	mux.RegisterAsync(muxrpc.Method{"names", "getFor"}, hGetFor{
+		log: l,
+		as:  as,
+	})
 
 	return &mux
 }

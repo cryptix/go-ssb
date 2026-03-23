@@ -21,6 +21,128 @@ import (
 	"github.com/ssbc/go-ssb/sbot"
 )
 
+func TestNamesImageFor(t *testing.T) {
+	if testutils.SkipOnCI(t) {
+		return
+	}
+
+	r := require.New(t)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	hk := make([]byte, 32)
+	n, err := rand.Read(hk)
+	r.Equal(32, n)
+
+	repoPath := filepath.Join("testrun", t.Name(), "about")
+	os.RemoveAll(repoPath)
+
+	ali, err := sbot.New(
+		sbot.WithHMACSigning(hk),
+		sbot.WithInfo(testutils.NewRelativeTimeLogger(nil)),
+		sbot.WithRepoPath(repoPath),
+		sbot.WithListenAddr(":0"),
+		sbot.LateOption(sbot.WithUNIXSocket()),
+	)
+	r.NoError(err)
+
+	var aliErrc = make(chan error, 1)
+	go func() {
+		err := ali.Network.Serve(ctx)
+		if err != nil && err != context.Canceled {
+			aliErrc <- fmt.Errorf("ali serve exited: %w", err)
+		}
+		close(aliErrc)
+	}()
+
+	// Parse a well-formed blob ref to use as the avatar image
+	testBlobRef, err := refs.ParseBlobRef("&0000000000000000000000000000000000000000000=.sha256")
+	r.NoError(err)
+
+	// Publish a self-about message with an image field
+	var aboutMsg refs.About
+	aboutMsg.Type = "about"
+	aboutMsg.About = ali.KeyPair.ID()
+	aboutMsg.Name = fmt.Sprintf("testName:%x", hk[:16])
+	aboutMsg.Image = &testBlobRef
+
+	_, err = ali.PublishLog.Publish(aboutMsg)
+	r.NoError(err)
+
+	ali.WaitUntilIndexesAreSynced()
+
+	c, err := client.NewUnix(filepath.Join(repoPath, "socket"))
+	r.NoError(err)
+
+	gotBlob, err := c.NamesImageFor(ali.KeyPair.ID())
+	r.NoError(err)
+	r.Equal(testBlobRef.Sigil(), gotBlob.Sigil(), "returned blob ref should match the published image")
+
+	r.NoError(c.Close())
+
+	cancel()
+	ali.Shutdown()
+	r.NoError(ali.Close())
+	r.NoError(<-aliErrc)
+}
+
+func TestNamesImageForNoAvatar(t *testing.T) {
+	if testutils.SkipOnCI(t) {
+		return
+	}
+
+	r := require.New(t)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	hk := make([]byte, 32)
+	n, err := rand.Read(hk)
+	r.Equal(32, n)
+
+	repoPath := filepath.Join("testrun", t.Name(), "about")
+	os.RemoveAll(repoPath)
+
+	ali, err := sbot.New(
+		sbot.WithHMACSigning(hk),
+		sbot.WithInfo(testutils.NewRelativeTimeLogger(nil)),
+		sbot.WithRepoPath(repoPath),
+		sbot.WithListenAddr(":0"),
+		sbot.LateOption(sbot.WithUNIXSocket()),
+	)
+	r.NoError(err)
+
+	var aliErrc = make(chan error, 1)
+	go func() {
+		err := ali.Network.Serve(ctx)
+		if err != nil && err != context.Canceled {
+			aliErrc <- fmt.Errorf("ali serve exited: %w", err)
+		}
+		close(aliErrc)
+	}()
+
+	// Publish a self-about message with name only, no image
+	var aboutMsg refs.About
+	aboutMsg.Type = "about"
+	aboutMsg.About = ali.KeyPair.ID()
+	aboutMsg.Name = fmt.Sprintf("testName:%x", hk[:16])
+
+	_, err = ali.PublishLog.Publish(aboutMsg)
+	r.NoError(err)
+
+	ali.WaitUntilIndexesAreSynced()
+
+	c, err := client.NewUnix(filepath.Join(repoPath, "socket"))
+	r.NoError(err)
+
+	_, err = c.NamesImageFor(ali.KeyPair.ID())
+	r.Error(err, "NamesImageFor should return an error when no image is set")
+
+	r.NoError(c.Close())
+
+	cancel()
+	ali.Shutdown()
+	r.NoError(ali.Close())
+	r.NoError(<-aliErrc)
+}
+
 func TestAboutNames(t *testing.T) {
 	if testutils.SkipOnCI(t) {
 		// https://github.com/ssbc/go-ssb/issues/282

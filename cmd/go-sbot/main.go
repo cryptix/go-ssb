@@ -32,6 +32,7 @@ import (
 
 	"github.com/ssbc/go-ssb"
 	"github.com/ssbc/go-ssb/internal/ctxutils"
+	"github.com/ssbc/go-ssb/internal/muxrpctracing"
 	"github.com/ssbc/go-ssb/internal/storedrefs"
 	"github.com/ssbc/go-ssb/internal/testutils"
 	"github.com/ssbc/go-ssb/multilogs"
@@ -611,7 +612,7 @@ func runSbot() error {
 	level.Info(log).Log("event", "serving", "ID", id.String(), "addr", listenAddr, "version", Version, "build", Build)
 	for {
 		// Note: This is where the serving starts ;)
-		err = sbot.Network.Serve(ctx)
+		err = sbot.Network.Serve(ctx, muxrpctracing.NewHandlerWrapper(log))
 		if err != nil {
 			level.Warn(log).Log("event", "sbot node.Serve returned", "err", err)
 		}
