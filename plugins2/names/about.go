@@ -35,6 +35,12 @@ type AboutAttribute struct {
 	Prescribed map[string]int
 }
 
+// ProfileEntry holds the self-assigned name and image for a feed.
+type ProfileEntry struct {
+	Name  string `json:"name,omitempty"`
+	Image string `json:"image,omitempty"`
+}
+
 var idxKeyPrefix = []byte("idx-abouts")
 
 func (ab aboutStore) waitForIndexes() {
@@ -144,6 +150,71 @@ func (ab aboutStore) All() (client.NamesGetResult, error) {
 		return nil
 	})
 	return ngr, err
+}
+
+// AllWithImages returns a map of feed sigil to ProfileEntry containing
+// the self-assigned name and image for each feed.
+func (ab aboutStore) AllWithImages() (map[string]ProfileEntry, error) {
+	ab.waitForIndexes()
+
+	result := make(map[string]ProfileEntry)
+	err := ab.kv.View(func(txn *badger.Txn) error {
+		iter := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer iter.Close()
+
+		for iter.Seek(idxKeyPrefix); iter.ValidForPrefix(idxKeyPrefix); iter.Next() {
+			it := iter.Item()
+			k := it.Key()
+
+			kWoPrefix := bytes.TrimPrefix(k, idxKeyPrefix)
+
+			if strings.HasPrefix(string(kWoPrefix), "__") {
+				continue
+			}
+
+			parts := strings.Split(string(kWoPrefix), ":")
+			if len(parts) != 3 {
+				return fmt.Errorf("about.AllWithImages: illegal key:%q", string(k))
+			}
+
+			about := parts[0]
+			author := parts[1]
+			field := parts[2]
+
+			// only collect self-assigned values (about == author)
+			if about != author {
+				continue
+			}
+
+			if field != "name" && field != "image" {
+				continue
+			}
+
+			err := it.Value(func(v []byte) error {
+				var val string
+				if err := json.Unmarshal(v, &val); err != nil {
+					// fallback: trim quotes for backwards compatibility
+					val = strings.TrimPrefix(string(v), "\"")
+					val = strings.TrimSuffix(val, "\"")
+				}
+
+				entry := result[about]
+				switch field {
+				case "name":
+					entry.Name = val
+				case "image":
+					entry.Image = val
+				}
+				result[about] = entry
+				return nil
+			})
+			if err != nil {
+				return fmt.Errorf("about.AllWithImages: value of item %q failed: %w", k, err)
+			}
+		}
+		return nil
+	})
+	return result, err
 }
 
 func (ab aboutStore) CollectedFor(ref refs.FeedRef) (*AboutInfo, error) {

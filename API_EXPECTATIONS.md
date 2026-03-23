@@ -334,3 +334,158 @@ and return content that matches these shapes:
     `BySearch`.
 22. `AfterSeq: 0` should return the most recent page; `AfterSeq: 1` should
     return nothing (no messages with rxSeq < 1).
+
+---
+
+## 11. Subsystem Improvements Needed
+
+Derived from auditing ssb-oasis (the web frontend). These additions let
+clients drop local caches and N+1 RPC loops, keeping the client thin and
+pushing work to the sbot where indexes already exist.
+
+### 11.1 `names.getAll` — Bulk Name + Image Map
+
+**Current state:** `names.get` returns `map[feed][author]→name` but no images.
+Clients must call `names.getImageFor` individually per feed, creating an N+1
+loop (e.g. 200 RPCs to render a contacts page).
+
+**Need:** Extend `names.get` (or add `names.getAll`) to return:
+```json
+{
+  "@feed1.ed25519": { "name": "Alice", "image": "&blob1.sha256" },
+  "@feed2.ed25519": { "name": "Bob",   "image": "&blob2.sha256" }
+}
+```
+One RPC replaces O(2N) calls. The sbot already has both name and image in the
+about index (`AboutInfo` struct has `Name`, `Description`, `Image` fields) —
+this just exposes them together.
+
+**Test scenario:** Publish self-about with name and image for 3 feeds. Call
+`names.getAll` — verify all 3 appear with correct name and image blob ref.
+
+### 11.2 `names.getFor` — Single-Feed Profile Bundle
+
+**Current state:** Rendering an author page requires 3 separate `getAbout`
+calls (name, description, image), each doing a subset query + stream scan.
+
+**Need:** `names.getFor(feedRef)` → `{name, description, image}` in one call.
+The about index already stores all three fields per feed.
+
+**Call:** `ssb.names.getFor(feedRef)`
+**Returns:**
+```json
+{
+  "name": "Alice",
+  "description": "I like cats",
+  "image": "&blobref.sha256"
+}
+```
+Missing fields should be omitted or null, not error.
+
+**Test scenario:** Publish self-about with name + description + image. Call
+`names.getFor` — verify all 3 fields. Call for feed with no about — verify
+empty/null response, no error.
+
+### 11.3 `friends.follows` — Direct Follows for a Feed
+
+**Current state:** `friends.hops({start, max:1})` returns feeds at distance 1
+but includes the feed itself and doesn't distinguish follows from followers.
+Clients must filter and guess.
+
+**Need:** `friends.follows(feedRef)` → list of feeds that `feedRef` follows.
+Clean, unambiguous. The graph builder already has `Follows(ref)` which returns
+exactly this.
+
+**Call:** `ssb.friends.follows({who: feedRef})`
+**Returns:** Stream of `refs.FeedRef` — each feed that `who` follows.
+
+**Test scenario:** A follows B and C, A blocks D. Call `friends.follows(A)` —
+verify B and C appear, D does not, A does not.
+
+### 11.4 `friends.getGraph` — Bulk Relationship Map
+
+**Current state:** Getting the relationship with one feed requires 3 RPCs
+(`isFollowing` twice + `isBlocking`). Rendering a contacts page does this
+per-feed, creating O(3N) calls.
+
+**Need:** `friends.getGraph({source})` → `map[feed]→{following, blocking,
+followsMe}`. One call replaces O(3N).
+
+**Call:** `ssb.friends.getGraph({source: feedRef})`
+**Returns:**
+```json
+{
+  "@feedB.ed25519": { "following": true,  "blocking": false, "followsMe": true },
+  "@feedC.ed25519": { "following": false, "blocking": true,  "followsMe": false }
+}
+```
+Only include feeds where at least one relationship exists (sparse map).
+
+**Test scenario:** A follows B, B follows A, A blocks C. Call
+`friends.getGraph({source: A})` — verify B shows `following+followsMe`, C
+shows `blocking`, unknown feeds are absent.
+
+### 11.5 Batch Message Get — `getMany`
+
+**Current state:** Resolving liked posts requires fetching each message
+individually by key. The popular page scans all votes then calls `get(key)`
+in a loop — O(N) RPCs.
+
+**Need:** `getMany([key1, key2, ...])` → `[msg1, msg2, ...]`. One RPC for
+a batch of message keys.
+
+**Call:** `ssb.get({ids: ["%ref1", "%ref2", ...]})`
+**Returns:** Array of `KeyValueRaw` messages in the same order as input. Missing
+keys should return null in their position, not error the whole call.
+
+**Test scenario:** Publish 5 messages. Call `getMany` with their 5 keys plus
+one non-existent key — verify 5 valid messages + 1 null, in order.
+
+### 11.6 Subset Query: Use `mentions` Operator in Clients
+
+**Current state:** ssb-oasis scans 35,000 messages via `messagesByType("post")`
+then filters client-side for mentions. The `mentions` operator already exists
+in go-ssb's subset planner and works.
+
+**Need:** No go-ssb changes needed. This is a client-side migration:
+```json
+{"op": "and", "args": [
+  {"op": "type", "string": "post"},
+  {"op": "mentions", "feed": "@me.ed25519"}
+]}
+```
+Replaces the 35k message scan with a bitmap intersection.
+
+**Test scenario:** Already covered by test scenario 20 (mentions round-trip).
+
+---
+
+## 12. Sorting Expectations
+
+### 12.1 Claimed Timestamp Sorting
+
+When a `SequenceResolver` is available (the normal case for a fully-indexed
+sbot), subset query results are sorted by **claimed timestamp** (the
+`value.timestamp` field set by the message author), not by receive log
+sequence.
+
+- `Descending: true` — newest-authored messages first (highest claimed
+  timestamp).
+- `Descending: false` (default) — oldest-authored messages first.
+
+This is critical for timeline views: a message authored recently but
+replicated late should still appear at the top in descending mode.
+
+**Test scenario:** Two authors publish at different times. Replicate the
+older author's message AFTER the newer one. Query descending — verify the
+newer-authored message appears first despite having a higher rxSeq.
+
+### 12.2 Hops Query with Timestamp Sort
+
+- **Composition:** `AND(Type("post"), Hops(who, 2))`
+- **With options:** `{descending: true, keys: true, pageLimit: 64}`
+- **Expects:** Posts from feeds within 2 hops of `who`, sorted by claimed
+  timestamp descending. This is the "extended timeline" view.
+
+**Test scenario:** A follows B, B follows C. C publishes a post. Query
+`AND(type:post, hops(A, 2))` — verify C's post appears.
