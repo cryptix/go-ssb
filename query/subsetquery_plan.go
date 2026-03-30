@@ -22,6 +22,7 @@ import (
 	margaret "github.com/ssbc/margaret/v2"
 	"github.com/ssbc/margaret/v2/multilog"
 	"github.com/ssbc/margaret/v2/multilog/roaring"
+	"errors"
 )
 
 // Searcher is implemented by full-text search indexes that return results as bitmaps.
@@ -181,47 +182,25 @@ func feedSetToBitmap(sp *SubsetPlaner, feeds *ssb.StrFeedSet) (*sroar.Bitmap, er
 	return result, nil
 }
 
-func combineBitmaps(ctx context.Context, sp *SubsetPlaner, qry SubsetOperation) (*sroar.Bitmap, error) {
-	ctx, span := tracing.Tracer.Start(ctx, "ssb.query."+qry.operation,
-		tracing.WithQueryOp(qry.operation),
-	)
-	defer span.End()
-
-	// Add operation-specific attributes
-	switch qry.operation {
-	case "author", "mentions", "followedBy", "blockedBy", "friendsBlocks", "hops":
-		if qry.feed != nil {
-			span.SetAttributes(tracing.AttrQueryAuthor.String(qry.feed.ShortSigil()))
-		}
-	case "type":
-		span.SetAttributes(tracing.AttrQueryType.String(qry.string))
-	case "channel":
-		span.SetAttributes(tracing.AttrQueryChannel.String(qry.string))
-	case "search":
-		span.SetAttributes(tracing.AttrSearchQuery.String(qry.string))
-	case "and", "or":
-		span.SetAttributes(tracing.AttrQueryArgs.Int(len(qry.args)))
+// loadBitmap wraps LoadInternalBitmap and converts ErrNotFound into a nil
+// bitmap. A missing sublog means no messages match that key — an empty set,
+// not an error. All other errors are returned as-is.
+func loadBitmap(ml *roaring.MultiLog, addr multilog.Addr) (*sroar.Bitmap, error) {
+	bm, err := ml.LoadInternalBitmap(addr)
+	if errors.Is(err, multilog.ErrNotFound) {
+		return nil, nil
 	}
-
-	result, err := combineBitmapsInner(ctx, sp, qry)
-	if err != nil {
-		span.RecordError(err)
-		return nil, err
-	}
-	if result != nil {
-		span.SetAttributes(tracing.AttrBitmapCardinality.Int(result.GetCardinality()))
-	}
-	return result, nil
+	return bm, err
 }
 
-func combineBitmapsInner(ctx context.Context, sp *SubsetPlaner, qry SubsetOperation) (*sroar.Bitmap, error) {
+func combineBitmaps(ctx context.Context, sp *SubsetPlaner, qry SubsetOperation) (*sroar.Bitmap, error) {
 	switch qry.operation {
 
 	case "author":
-		return sp.authors.LoadInternalBitmap(storedrefs.Feed(*qry.feed))
+		return loadBitmap(sp.authors, storedrefs.Feed(*qry.feed))
 
 	case "type":
-		return sp.bytype.LoadInternalBitmap(multilog.Addr("string:" + qry.string))
+		return loadBitmap(sp.bytype, multilog.Addr("string:"+qry.string))
 
 	case "tangle":
 		if sp.tangles == nil {
@@ -233,29 +212,29 @@ func combineBitmapsInner(ctx context.Context, sp *SubsetPlaner, qry SubsetOperat
 		} else {
 			addr = storedrefs.TangleV2(qry.name, *qry.root)
 		}
-		return sp.tangles.LoadInternalBitmap(addr)
+		return loadBitmap(sp.tangles, addr)
 
 	case "channel":
 		if sp.channels == nil {
 			return nil, fmt.Errorf("sbot: channel queries not supported (no channel index)")
 		}
-		return sp.channels.LoadInternalBitmap(multilogs.SanitizeChannelAddr(qry.string))
+		return loadBitmap(sp.channels, multilogs.SanitizeChannelAddr(qry.string))
 
 	case "mentions":
 		if sp.mentions == nil {
 			return nil, fmt.Errorf("sbot: mentions queries not supported (no mentions index)")
 		}
-		return sp.mentions.LoadInternalBitmap(multilog.Addr(qry.feed.String()))
+		return loadBitmap(sp.mentions, multilog.Addr(qry.feed.String()))
 
 	case "hasBlob":
 		if sp.mentions == nil {
 			return nil, fmt.Errorf("sbot: hasBlob queries not supported (no mentions index)")
 		}
-		return sp.mentions.LoadInternalBitmap(multilog.Addr(qry.ref))
+		return loadBitmap(sp.mentions, multilog.Addr(qry.ref))
 
 	case "isRoot":
 		// root posts are tracked in byType under the "meta:root" key
-		return sp.bytype.LoadInternalBitmap(multilog.Addr("meta:root"))
+		return loadBitmap(sp.bytype, multilog.Addr("meta:root"))
 
 	case "timestamp":
 		// Use SequenceResolver for O(1) timestamp lookups per entry

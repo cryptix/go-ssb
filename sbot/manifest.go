@@ -75,6 +75,8 @@ var manifestBlob manifestHandler = `
 		"replicate": "duplex"
 	},
 	"friends": {
+        "getGraph": "async",
+        "follows": "source",
 		"blocks": "source",
 		"hops": "source",
 		"isBlocking": "async",
@@ -97,6 +99,8 @@ var manifestBlob manifestHandler = `
 	"messagesByType": "source",
 	"names": {
 		"get": "async",
+        "getAll": "async",
+		"getFor": "async",
 		"getImageFor": "async",
 		"getSignifier": "async"
 	},
