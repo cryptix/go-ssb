@@ -57,12 +57,14 @@ func New(log logging.Interface,
 		rxlog: rxlog,
 	})
 
-	qp := query.NewSubsetPlanerFull(feeds, bytype, roots, channels, mentions, rxlog, gb, sr)
+	qp := query.NewSubsetPlanerFull(feeds, bytype, roots, channels, mentions, rxlog, gb, sr).
+		WithLogger(log)
 	if search != nil {
 		qp = qp.WithSearch(search)
 	}
 
 	rootHdlr.RegisterSource(muxrpc.Method{name, "getSubset"}, getSubsetHandler{
+		logger:      log,
 		queryPlaner: qp,
 		rxLog:       rxlog,
 		seqResolver: sr,

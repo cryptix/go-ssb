@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"go.mindeco.de/log/level"
+	"go.mindeco.de/logging"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/ssbc/go-muxrpc/v3"
@@ -22,6 +24,7 @@ import (
 )
 
 type getSubsetHandler struct {
+	logger      logging.Interface
 	queryPlaner *query.SubsetPlaner
 
 	rxLog       margaret.Log[*multimsg.MultiMessage]
@@ -73,16 +76,23 @@ func (h getSubsetHandler) HandleSource(ctx context.Context, req *muxrpc.Request,
 		opts.Keys = true
 	}
 
+	argJSON, _ := json.Marshal(arg)
+	level.Debug(h.logger).Log("event", "getSubset-request", "arg", string(argJSON), "limit", opts.PageLimit, "desc", opts.Descending, "keys", opts.Keys)
+
 	resulting, err := h.queryPlaner.QuerySubsetBitmap(ctx, arg)
 	if err != nil {
 		span.RecordError(err)
+		level.Debug(h.logger).Log("event", "getSubset-query-error", "err", err)
 		return fmt.Errorf("failed to send query result to peer: %w", err)
 	}
 
 	if resulting == nil {
+		level.Debug(h.logger).Log("event", "getSubset-nil-result")
 		sink.Close()
 		return nil
 	}
+
+	level.Debug(h.logger).Log("event", "getSubset-result", "cardinality", resulting.GetCardinality())
 
 	sink.SetEncoding(muxrpc.TypeJSON)
 

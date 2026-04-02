@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +16,7 @@ import (
 
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/message"
+	"github.com/ssbc/go-ssb/query"
 )
 
 var streamFlags = []cli.Flag{
@@ -221,6 +223,51 @@ var replicateUptoCmd = &cli.Command{
 			err = fmt.Errorf("message pump failed: %w", err)
 		}
 		return err
+	},
+}
+
+var searchCmd = &cli.Command{
+	Name:      "search",
+	Usage:     "Full-text search across indexed messages",
+	ArgsUsage: "<query string>",
+	Description: `Full-text search across indexed messages (post text, about names/descriptions).
+
+Example:
+
+    sbotcli search "hello world"
+    sbotcli search --limit 20 --keys "scuttlebutt protocol"`,
+	Flags: []cli.Flag{
+		&cli.IntFlag{Name: "limit", Value: -1, Usage: "Maximum number of results (-1 for all)"},
+		&cli.BoolFlag{Name: "desc", Value: false, Usage: "Return results in descending order"},
+		&cli.BoolFlag{Name: "keys", Value: false, Usage: "Include message keys in output"},
+	},
+	Action: func(ctx *cli.Context) error {
+		queryStr := ctx.Args().First()
+		if queryStr == "" {
+			return errors.New("search: query string can't be empty")
+		}
+
+		client, err := newClient(ctx)
+		if err != nil {
+			return err
+		}
+
+		opts := &query.SubsetOptions{
+			PageLimit:  ctx.Int("limit"),
+			Descending: ctx.Bool("desc"),
+			Keys:       ctx.Bool("keys"),
+		}
+
+		src, err := client.SubsetSearch(queryStr, opts)
+		if err != nil {
+			return fmt.Errorf("search call failed: %w", err)
+		}
+
+		err = jsonDrain(os.Stdout, src)
+		if err != nil {
+			return fmt.Errorf("search: result copy failed: %w", err)
+		}
+		return nil
 	},
 }
 

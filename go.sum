@@ -284,6 +284,8 @@ github.com/ssbc/go-ssb-multiserver v0.1.5-0.20221019203850-917ae0e23d57/go.mod h
 github.com/ssbc/go-ssb-refs v0.5.2-0.20221017100922-8e95413c6580/go.mod h1:rUj40X7iiUWFt62aF4NVm3uNnKiPZ9Uo/ds4D4ZE980=
 github.com/ssbc/go-ssb-refs v0.5.2 h1:PDjtfRMywwsP69pNdiCh/P9gj95W4iJsrQo5uDus0EY=
 github.com/ssbc/go-ssb-refs v0.5.2/go.mod h1:HlojPQQVXjZv+rqOnDVaZo5c8kwJQC7kpejcRqOJ54o=
+github.com/ssbc/go-ssb-refs v0.5.3-0.20260327234841-dbd71f7c3e4f h1:LYH/fIX9jVQ8R5dDbM3SmCN20nypN0XkSvwsgRPKCdQ=
+github.com/ssbc/go-ssb-refs v0.5.3-0.20260327234841-dbd71f7c3e4f/go.mod h1:HlojPQQVXjZv+rqOnDVaZo5c8kwJQC7kpejcRqOJ54o=
 github.com/ssbc/margaret/v2 v2.0.0-20260308102751-06c45074e542 h1:tzWSA4OAGmpmyr1/EI7KI4BEnHCFV4z/5yovmby0vhI=
 github.com/ssbc/margaret/v2 v2.0.0-20260308102751-06c45074e542/go.mod h1:fkR79b6WUYgmC5S1e/TeaC0zEdxpnua0hc9R7JlmsTE=
 github.com/ssbc/margaret/v2 v2.0.0-20260308112302-d31aa606b278 h1:n/I/ULo7j2UE02yOiiV8nXfnLYuC88rDY7KTWee/NE0=

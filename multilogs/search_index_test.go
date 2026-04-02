@@ -5,6 +5,7 @@
 package multilogs_test
 
 import (
+	"context"
 	"crypto/rand"
 	"os"
 	"path/filepath"
@@ -114,7 +115,7 @@ func TestSearchIndex(t *testing.T) {
 
 		// search for "quick brown" -- should match alice's fox post and bob's rabbit post
 		qry := query.NewSubsetOpBySearch("quick brown")
-		msgs, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		msgs, err := sp.QuerySubsetMessages(context.Background(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		a.Len(msgs, 2, "should find 2 messages containing 'quick brown'")
 	})
@@ -125,7 +126,7 @@ func TestSearchIndex(t *testing.T) {
 
 		// "scuttlebutt" only appears in one post
 		qry := query.NewSubsetOpBySearch("scuttlebutt")
-		msgs, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		msgs, err := sp.QuerySubsetMessages(context.Background(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		a.Len(msgs, 1, "should find 1 message containing 'scuttlebutt'")
 	})
@@ -139,7 +140,7 @@ func TestSearchIndex(t *testing.T) {
 			query.NewSubsetOpBySearch("quick"),
 			query.NewSubsetOpByType("post"),
 		)
-		msgs, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		msgs, err := sp.QuerySubsetMessages(context.Background(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		a.Len(msgs, 2, "search AND type(post) should find 2 matching posts")
 	})
@@ -153,7 +154,7 @@ func TestSearchIndex(t *testing.T) {
 			query.NewSubsetOpBySearch("quick"),
 			query.NewSubsetOpByAuthor(kpAlice.ID()),
 		)
-		msgs, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		msgs, err := sp.QuerySubsetMessages(context.Background(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		a.Len(msgs, 1, "search AND author(alice) should find 1 matching post")
 	})
@@ -164,7 +165,7 @@ func TestSearchIndex(t *testing.T) {
 
 		// search for a term that does not appear in any message
 		qry := query.NewSubsetOpBySearch("xylophone")
-		msgs, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		msgs, err := sp.QuerySubsetMessages(context.Background(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		a.Empty(msgs, "search for non-existent term should return no results")
 	})
@@ -175,7 +176,7 @@ func TestSearchIndex(t *testing.T) {
 
 		// "wonderland" appears in alice's about name
 		qry := query.NewSubsetOpBySearch("wonderland")
-		msgs, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		msgs, err := sp.QuerySubsetMessages(context.Background(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		a.Len(msgs, 1, "should find 1 about message containing 'wonderland'")
 	})
@@ -191,7 +192,7 @@ func TestSearchIndex(t *testing.T) {
 			query.NewSubsetOpBySearch("contact"),
 			query.NewSubsetOpByType("contact"),
 		)
-		msgs, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		msgs, err := sp.QuerySubsetMessages(context.Background(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		a.Empty(msgs, "contact messages should not appear in search results")
 	})
@@ -205,7 +206,7 @@ func TestSearchIndex(t *testing.T) {
 			query.NewSubsetOpBySearch("fox"),
 			query.NewSubsetOpBySearch("cryptography"),
 		)
-		msgs, err := sp.QuerySubsetMessages(mainbot.ReceiveLog, qry)
+		msgs, err := sp.QuerySubsetMessages(context.Background(), mainbot.ReceiveLog, qry)
 		r.NoError(err)
 		a.Len(msgs, 2, "OR of two searches should find 2 distinct messages")
 	})
@@ -244,7 +245,7 @@ func TestSearchIndexDisabled(t *testing.T) {
 	)
 
 	qry := query.NewSubsetOpBySearch("anything")
-	_, err = sp.QuerySubsetBitmap(qry)
+	_, err = sp.QuerySubsetBitmap(context.Background(), qry)
 	r.Error(err, "search query should fail when search index is not configured")
 	r.Contains(err.Error(), "search index not configured")
 

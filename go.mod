@@ -35,7 +35,7 @@ require (
 	github.com/ssbc/go-netwrap v0.1.5-0.20221019160355-cd323bb2e29d
 	github.com/ssbc/go-secretstream v1.2.11-0.20221019175226-fa042d4912fe
 	github.com/ssbc/go-ssb-multiserver v0.1.5-0.20221019203850-917ae0e23d57
-	github.com/ssbc/go-ssb-refs v0.5.2
+	github.com/ssbc/go-ssb-refs v0.5.3-0.20260327234841-dbd71f7c3e4f
 	github.com/ssbc/margaret/v2 v2.0.0-20260308112302-d31aa606b278
 	github.com/stretchr/testify v1.11.1
 	github.com/ugorji/go/codec v1.3.1

@@ -17,6 +17,8 @@ import (
 	"github.com/blevesearch/bleve/v2/mapping"
 	"github.com/dgraph-io/sroar"
 	"github.com/keks/persist"
+	"go.mindeco.de/log"
+	"go.mindeco.de/log/level"
 
 	margaret "github.com/ssbc/margaret/v2"
 
@@ -29,7 +31,8 @@ const searchBatchSize = 128
 // SearchIndex provides full-text search over SSB messages using Bleve.
 // It follows the same incremental indexing pattern as CombinedIndex.
 type SearchIndex struct {
-	index bleve.Index
+	logger log.Logger
+	index  bleve.Index
 
 	stateFile *os.File
 	mu        sync.Mutex
@@ -43,7 +46,7 @@ func (idx *SearchIndex) SetOnEntry(fn func()) {
 }
 
 // NewSearchIndex opens or creates a Bleve full-text search index.
-func NewSearchIndex(repoPath string) (*SearchIndex, error) {
+func NewSearchIndex(logger log.Logger, repoPath string) (*SearchIndex, error) {
 	r := repo.New(repoPath)
 	idxPath := r.GetPath(repo.PrefixMultiLog, "search")
 	statePath := r.GetPath(repo.PrefixMultiLog, "search-state.json")
@@ -73,10 +76,37 @@ func NewSearchIndex(repoPath string) (*SearchIndex, error) {
 		}
 	}
 
-	return &SearchIndex{
+	si := &SearchIndex{
+		logger:    log.With(logger, "unit", "search-index"),
 		index:     idx,
 		stateFile: stateFile,
-	}, nil
+	}
+
+	// Log what fields the stored index mapping actually has, so we can
+	// detect stale/broken mappings from previous versions.
+	if fields, err := idx.Fields(); err == nil {
+		level.Info(si.logger).Log("event", "index-opened", "indexed_fields", fmt.Sprintf("%v", fields))
+
+		// A healthy index has at least "text" indexed. If only "_id" is present
+		// the index was built with a broken mapping (e.g. DefaultMapping.Enabled=false
+		// in an earlier version) and every document is a bare ID with no searchable
+		// content. Reset the state file so the next Index() call rebuilds from scratch.
+		hasContent := false
+		for _, f := range fields {
+			if f == "text" || f == "name" || f == "description" {
+				hasContent = true
+				break
+			}
+		}
+		if !hasContent {
+			level.Warn(si.logger).Log("event", "index-stale-mapping",
+				"msg", "search index has no searchable fields — it was built with an incompatible mapping",
+				"fix", fmt.Sprintf("delete %s and %s, then restart", idxPath, statePath),
+			)
+		}
+	}
+
+	return si, nil
 }
 
 func buildSearchMapping() mapping.IndexMapping {
@@ -119,15 +149,16 @@ type searchDocument struct {
 }
 
 // Index processes all unprocessed entries from the given log.
-func (idx *SearchIndex) Index(log margaret.Log[*multimsg.MultiMessage]) error {
+func (idx *SearchIndex) Index(rxlog margaret.Log[*multimsg.MultiMessage]) error {
 	lastSeq := idx.LastProcessedSeq()
+	level.Debug(idx.logger).Log("event", "index-run-start", "last_processed_seq", lastSeq, "log_seq", rxlog.Seq())
 
 	var opts []margaret.QueryOption
 	if lastSeq >= 0 {
 		opts = append(opts, margaret.Gt(lastSeq))
 	}
 
-	qry := log.Query(opts...)
+	qry := rxlog.Query(opts...)
 	batch := idx.index.NewBatch()
 	batchCount := 0
 	lastBatchSeq := margaret.SeqEmpty
@@ -168,6 +199,7 @@ func (idx *SearchIndex) Index(log margaret.Log[*multimsg.MultiMessage]) error {
 		idx.saveSeq(lastBatchSeq)
 	}
 
+	level.Debug(idx.logger).Log("event", "index-run-done", "total_scanned", totalProcessed, "last_seq", lastBatchSeq)
 	return qry.Err()
 }
 
@@ -244,13 +276,29 @@ func (idx *SearchIndex) Search(_ context.Context, queryStr string, limit int) (*
 		limit = 100
 	}
 
-	q := bleve.NewQueryStringQuery(queryStr)
+	docCount, _ := idx.index.DocCount()
+	level.Debug(idx.logger).Log("event", "search-query", "query", queryStr, "limit", limit, "bleve_doc_count", docCount, "last_processed_seq", idx.LastProcessedSeq())
+
+	// Search text, name and description fields explicitly.
+	// NewQueryStringQuery searches the _all composite field, which is not
+	// populated for type-routed documents (post/about use their own
+	// DocumentMapping rather than the DefaultMapping where _all lives).
+	textQ := bleve.NewMatchQuery(queryStr)
+	textQ.SetField("text")
+	nameQ := bleve.NewMatchQuery(queryStr)
+	nameQ.SetField("name")
+	descQ := bleve.NewMatchQuery(queryStr)
+	descQ.SetField("description")
+	q := bleve.NewDisjunctionQuery(textQ, nameQ, descQ)
 	req := bleve.NewSearchRequestOptions(q, limit, 0, false)
 
 	result, err := idx.index.Search(req)
 	if err != nil {
+		level.Debug(idx.logger).Log("event", "search-query-error", "query", queryStr, "err", err)
 		return nil, fmt.Errorf("search index: query error: %w", err)
 	}
+
+	level.Debug(idx.logger).Log("event", "search-bleve-result", "query", queryStr, "total_hits", result.Total, "returned_hits", len(result.Hits))
 
 	bm := sroar.NewBitmap()
 	for _, hit := range result.Hits {
@@ -260,6 +308,8 @@ func (idx *SearchIndex) Search(_ context.Context, queryStr string, limit int) (*
 		}
 		bm.Set(uint64(seq))
 	}
+
+	level.Debug(idx.logger).Log("event", "search-bitmap-result", "query", queryStr, "cardinality", bm.GetCardinality())
 	return bm, nil
 }
 

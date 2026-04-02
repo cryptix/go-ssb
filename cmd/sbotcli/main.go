@@ -105,6 +105,7 @@ Please note, global options must be placed before sub-commands, e.g.
 		historyStreamCmd,
 		replicateUptoCmd,
 		repliesStreamCmd,
+		searchCmd,
 		callCmd,
 		sourceCmd,
 		connectCmd,

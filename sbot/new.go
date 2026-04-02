@@ -419,7 +419,7 @@ func New(fopts ...Option) (*Sbot, error) {
 
 	// full-text search index (optional)
 	if s.enableSearch {
-		searchIdx, err := multilogs.NewSearchIndex(s.repoPath)
+		searchIdx, err := multilogs.NewSearchIndex(s.info, s.repoPath)
 		if err != nil {
 			return nil, fmt.Errorf("sbot: failed to open search index: %w", err)
 		}

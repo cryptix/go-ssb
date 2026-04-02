@@ -7,10 +7,13 @@ package query
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/dgraph-io/sroar"
 	refs "github.com/ssbc/go-ssb-refs"
+	"go.mindeco.de/log"
+	"go.mindeco.de/log/level"
 
 	"github.com/ssbc/go-ssb"
 	"github.com/ssbc/go-ssb/graph"
@@ -22,7 +25,6 @@ import (
 	margaret "github.com/ssbc/margaret/v2"
 	"github.com/ssbc/margaret/v2/multilog"
 	"github.com/ssbc/margaret/v2/multilog/roaring"
-	"errors"
 )
 
 // Searcher is implemented by full-text search indexes that return results as bitmaps.
@@ -47,7 +49,8 @@ type SubsetPlaner struct {
 	// graphBuilder provides access to the social follow/block graph
 	// for graph-aware query operations (followedBy, blockedBy, hops, friendsBlocks)
 	graphBuilder graph.Builder
-	search       Searcher // optional, may be nil
+	search       Searcher  // optional, may be nil
+	logger       log.Logger // optional, may be nil (nop logger used if not set)
 }
 
 // NewSubsetPlaner creates a new SubsetPlaner with author and type indexes.
@@ -56,6 +59,7 @@ func NewSubsetPlaner(authors, bytype *roaring.MultiLog) *SubsetPlaner {
 	return &SubsetPlaner{
 		authors: authors,
 		bytype:  bytype,
+		logger:  log.NewNopLogger(),
 	}
 }
 
@@ -65,6 +69,7 @@ func NewSubsetPlanerWithTangles(authors, bytype, tangles *roaring.MultiLog) *Sub
 		authors: authors,
 		bytype:  bytype,
 		tangles: tangles,
+		logger:  log.NewNopLogger(),
 	}
 }
 
@@ -85,12 +90,19 @@ func NewSubsetPlanerFull(
 		rxLog:        rxLog,
 		graphBuilder: gb,
 		seqResolver:  sr,
+		logger:       log.NewNopLogger(),
 	}
 }
 
 // WithSearch returns the planer configured with a full-text search index.
 func (sp *SubsetPlaner) WithSearch(s Searcher) *SubsetPlaner {
 	sp.search = s
+	return sp
+}
+
+// WithLogger returns the planer configured with a logger for debug output.
+func (sp *SubsetPlaner) WithLogger(l log.Logger) *SubsetPlaner {
+	sp.logger = log.With(l, "unit", "subset-planer")
 	return sp
 }
 
@@ -385,7 +397,17 @@ func combineBitmaps(ctx context.Context, sp *SubsetPlaner, qry SubsetOperation) 
 		if sp.search == nil {
 			return nil, fmt.Errorf("sbot: search index not configured")
 		}
-		return sp.search.Search(ctx, qry.string, 1000)
+		level.Debug(sp.logger).Log("event", "search-op", "query", qry.string)
+		bm, err := sp.search.Search(ctx, qry.string, 1000)
+		if err != nil {
+			return nil, err
+		}
+		card := 0
+		if bm != nil {
+			card = bm.GetCardinality()
+		}
+		level.Debug(sp.logger).Log("event", "search-op-result", "query", qry.string, "cardinality", card)
+		return bm, nil
 
 	case "or", "and":
 		if len(qry.args) == 0 {
