@@ -120,7 +120,21 @@ func (s *Sbot) serveIndexFrom(name string, idx LogIndexer, msgs margaret.Log[*mu
 		}()
 
 		// Process backlog
-		totalMessages := msgs.Seq()
+		// msgs.Seq() is the last sequence number (0-indexed): N messages → Seq() = N-1.
+		// The index resumes from its checkpoint, so only the remaining messages are processed.
+		// We compute the actual remaining work so the ETA reflects real progress, not the
+		// full log size.
+		logSeq := msgs.Seq() // last seq (0-indexed); total messages = logSeq+1
+		var lastProcessed int64 = -1
+		if lp, ok := idx.(interface{ LastProcessedSeq() int64 }); ok {
+			lastProcessed = lp.LastProcessedSeq()
+		}
+		// remaining = (logSeq) - lastProcessed  (number of messages still to process)
+		// e.g. 1000 messages (seq 0..999), checkpoint at 799 → 200 remaining
+		remaining := logSeq - lastProcessed
+		if remaining < 0 {
+			remaining = 0
+		}
 		var ps progressCounter
 
 		// If the index supports progress callbacks, wire it up
@@ -130,15 +144,15 @@ func (s *Sbot) serveIndexFrom(name string, idx LogIndexer, msgs margaret.Log[*mu
 
 		ctx, cancel := context.WithCancel(s.rootCtx)
 		go func() {
-			p := progress.NewTicker(ctx, &ps, int64(totalMessages), 7*time.Second)
+			p := progress.NewTicker(ctx, &ps, remaining, 7*time.Second)
 			pinfo := log.With(level.Info(logger), "event", "index-progress")
-			for remaining := range p {
-				estDone := remaining.Estimated()
+			for prog := range p {
+				estDone := prog.Estimated()
 				timeLeft := estDone.Sub(time.Now()).Round(time.Second)
-				pinfo.Log("done", remaining.Percent(), "time-left", timeLeft)
+				pinfo.Log("done", prog.Percent(), "time-left", timeLeft)
 
 				s.indexStateMu.Lock()
-				s.indexStates[name] = fmt.Sprintf("%.2f%% (time left:%s)", remaining.Percent(), timeLeft)
+				s.indexStates[name] = fmt.Sprintf("%.1f%% (time left:%s)", prog.Percent()*100, timeLeft)
 				s.indexStateMu.Unlock()
 			}
 		}()
