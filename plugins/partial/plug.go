@@ -43,11 +43,12 @@ func New(log logging.Interface,
 	fm *gossip.FeedManager,
 	feeds, bytype, roots *roaring.MultiLog,
 	channels, mentions *roaring.MultiLog,
+	backlinks *roaring.MultiLog,
 	rxlog margaret.Log[*multimsg.MultiMessage],
 	get ssb.Getter,
 	gb graph.Builder,
 	sr *repo.SequenceResolver,
-	search query.Searcher, // may be nil
+	search query.Searcher,
 ) ssb.Plugin {
 	rootHdlr := typemux.New(log)
 
@@ -57,11 +58,18 @@ func New(log logging.Interface,
 		rxlog: rxlog,
 	})
 
-	qp := query.NewSubsetPlanerFull(feeds, bytype, roots, channels, mentions, rxlog, gb, sr).
-		WithLogger(log)
-	if search != nil {
-		qp = qp.WithSearch(search)
-	}
+	qp := query.NewSubsetPlaner(query.SubsetPlanerOptions{
+		Authors:     feeds,
+		ByType:      bytype,
+		Tangles:     roots,
+		Channels:    channels,
+		Mentions:    mentions,
+		Backlinks:   backlinks,
+		RxLog:       rxlog,
+		Graph:       gb,
+		SeqResolver: sr,
+		Search:      search,
+	})
 
 	rootHdlr.RegisterSource(muxrpc.Method{name, "getSubset"}, getSubsetHandler{
 		logger:      log,
