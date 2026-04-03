@@ -43,6 +43,7 @@ func New(log logging.Interface,
 	fm *gossip.FeedManager,
 	feeds, bytype, roots *roaring.MultiLog,
 	channels, mentions *roaring.MultiLog,
+	backlinks *roaring.MultiLog, // may be nil
 	rxlog margaret.Log[*multimsg.MultiMessage],
 	get ssb.Getter,
 	gb graph.Builder,
@@ -58,6 +59,9 @@ func New(log logging.Interface,
 	})
 
 	qp := query.NewSubsetPlanerFull(feeds, bytype, roots, channels, mentions, rxlog, gb, sr)
+	if backlinks != nil {
+		qp = qp.WithBacklinks(backlinks)
+	}
 	if search != nil {
 		qp = qp.WithSearch(search)
 	}

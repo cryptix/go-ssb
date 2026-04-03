@@ -44,6 +44,7 @@ func NewCombinedIndex(
 	rxlog margaret.Log[*multimsg.MultiMessage],
 	u, p, bt, tan *roaring.MultiLog,
 	channels, mentions *roaring.MultiLog,
+	backlinks *roaring.MultiLog,
 	oh *roaring.MultiLog,
 	sm *statematrix.StateMatrix,
 ) (*CombinedIndex, error) {
@@ -64,12 +65,13 @@ func NewCombinedIndex(
 		boxer: box,
 
 		// application multilogs
-		users:    u,
-		private:  p,
-		byType:   bt,
-		tangles:  tan,
-		channels: channels,
-		mentions: mentions,
+		users:     u,
+		private:   p,
+		byType:    bt,
+		tangles:   tan,
+		channels:  channels,
+		mentions:  mentions,
+		backlinks: backlinks,
 
 		ebtState: sm,
 
@@ -97,12 +99,13 @@ type CombinedIndex struct {
 
 	rxlog margaret.Log[*multimsg.MultiMessage]
 
-	users    *roaring.MultiLog
-	private  *roaring.MultiLog
-	byType   *roaring.MultiLog
-	tangles  *roaring.MultiLog
-	channels *roaring.MultiLog
-	mentions *roaring.MultiLog
+	users     *roaring.MultiLog
+	private   *roaring.MultiLog
+	byType    *roaring.MultiLog
+	tangles   *roaring.MultiLog
+	channels  *roaring.MultiLog
+	mentions  *roaring.MultiLog
+	backlinks *roaring.MultiLog
 
 	orderdHelper *roaring.MultiLog
 
@@ -264,7 +267,7 @@ func (idx *CombinedIndex) ProcessBatch(entries []IndexEntry) error {
 
 	// Flush all roaring multilogs before persisting state, so the state file
 	// never references bitmap data that isn't on disk yet.
-	for _, ml := range []*roaring.MultiLog{idx.users, idx.private, idx.byType, idx.tangles, idx.orderdHelper, idx.channels, idx.mentions} {
+	for _, ml := range []*roaring.MultiLog{idx.users, idx.private, idx.byType, idx.tangles, idx.orderdHelper, idx.channels, idx.mentions, idx.backlinks} {
 		if ml == nil {
 			continue
 		}
@@ -470,6 +473,13 @@ func (idx *CombinedIndex) VerifyConsistency(rxlog margaret.Log[*multimsg.MultiMe
 			idx.private.Delete(addr)
 		}
 	}
+	if idx.backlinks != nil {
+		if addrs, err := idx.backlinks.List(); err == nil {
+			for _, addr := range addrs {
+				idx.backlinks.Delete(addr)
+			}
+		}
+	}
 
 	// Reset the state to force a full re-index from the beginning.
 	// A partial rewind isn't safe because we don't know how far back
@@ -552,13 +562,14 @@ func (idx *CombinedIndex) updateSublogs(rxSeq int64, mm *multimsg.MultiMessage) 
 		content = cleartext
 	}
 
-	// by type:...  channels, mentions, and tangles (v1 & v2)
+	// by type:...  channels, mentions, tangles (v1 & v2), and backlinks
 	var jsonContent struct {
 		Type     string
 		Root     *refs.MessageRef
 		Tangles  refs.Tangles
 		Channel  string           `json:"channel"`
 		Mentions []mentionContent `json:"mentions"`
+		Vote     *voteContent     `json:"vote"`
 	}
 	err = json.Unmarshal(content, &jsonContent)
 	if err != nil {
@@ -658,6 +669,23 @@ func (idx *CombinedIndex) updateSublogs(rxSeq int64, mm *multimsg.MultiMessage) 
 		}
 	}
 
+	// backlinks: index structured refs from backlinkSelectors.
+	// Currently: vote.link → the message being voted on.
+	if idx.backlinks != nil {
+		if jsonContent.Vote != nil && jsonContent.Vote.Link != "" {
+			ref, err := refs.ParseMessageRef(jsonContent.Vote.Link)
+			if err == nil {
+				backlinkLog, err := idx.backlinks.Get(storedrefs.Message(ref))
+				if err != nil {
+					return fmt.Errorf("error opening backlink sublog: %w", err)
+				}
+				if err := appendSeq(backlinkLog, rxSeq); err != nil {
+					return fmt.Errorf("error updating backlink sublog: %w", err)
+				}
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -679,7 +707,7 @@ func (idx *CombinedIndex) FlushAndSave() error {
 	defer idx.l.Unlock()
 
 	// Flush all roaring multilogs so bitmap data is on disk.
-	for _, ml := range []*roaring.MultiLog{idx.users, idx.private, idx.byType, idx.tangles, idx.orderdHelper, idx.channels, idx.mentions} {
+	for _, ml := range []*roaring.MultiLog{idx.users, idx.private, idx.byType, idx.tangles, idx.orderdHelper, idx.channels, idx.mentions, idx.backlinks} {
 		if ml == nil {
 			continue
 		}
@@ -771,6 +799,21 @@ func (idx *CombinedIndex) tryDecrypt(mm *multimsg.MultiMessage, rxSeq int64) ([]
 // mentionContent represents a single entry in the content.mentions array
 type mentionContent struct {
 	Link string `json:"link"`
+}
+
+// voteContent represents the content.vote object used in SSB vote messages.
+type voteContent struct {
+	Link string `json:"link"`
+}
+
+// backlinkSelectors lists the (outer field, inner field) pairs whose values
+// are MessageRefs that should be indexed as backlinks. Add new selectors here
+// to extend coverage to additional message types.
+//
+// Current selectors:
+//   - vote.link  — the message being voted on
+var backlinkSelectors = []struct{ outer, inner string }{
+	{outer: "vote", inner: "link"},
 }
 
 var (

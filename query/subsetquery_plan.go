@@ -31,6 +31,7 @@ type SubsetPlaner struct {
 	tangles         *roaring.MultiLog
 	channels        *roaring.MultiLog
 	mentions        *roaring.MultiLog
+	backlinks       *roaring.MultiLog
 
 	// rxLog is needed for NOT operations (to compute the universe bitmap)
 	// and for timestamp filtering
@@ -87,6 +88,12 @@ func NewSubsetPlanerFull(
 // WithSearch returns the planer configured with a full-text search index.
 func (sp *SubsetPlaner) WithSearch(s Searcher) *SubsetPlaner {
 	sp.search = s
+	return sp
+}
+
+// WithBacklinks returns the planer configured with a backlinks index.
+func (sp *SubsetPlaner) WithBacklinks(bl *roaring.MultiLog) *SubsetPlaner {
+	sp.backlinks = bl
 	return sp
 }
 
@@ -198,6 +205,12 @@ func combineBitmaps(sp *SubsetPlaner, qry SubsetOperation) (*sroar.Bitmap, error
 			return nil, fmt.Errorf("sbot: hasBlob queries not supported (no mentions index)")
 		}
 		return sp.mentions.LoadInternalBitmap(multilog.Addr(qry.ref))
+
+	case "backlinks":
+		if sp.backlinks == nil {
+			return nil, fmt.Errorf("sbot: backlinks queries not supported (no backlinks index)")
+		}
+		return sp.backlinks.LoadInternalBitmap(storedrefs.Message(*qry.root))
 
 	case "isRoot":
 		// root posts are tracked in byType under the "meta:root" key

@@ -142,9 +142,10 @@ type Sbot struct {
 	Users    *roaring.MultiLog // one sublog per feed
 	Private  *roaring.MultiLog // one sublog per keypair
 	ByType   *roaring.MultiLog // one sublog per type: ... (special cases for private messages by suffix)
-	Tangles  *roaring.MultiLog // one sublog per root:%ref (actual root is in the get index)
-	Channels *roaring.MultiLog // one sublog per channel name
-	Mentions *roaring.MultiLog // one sublog per mentioned ref (feed, message, or blob)
+	Tangles   *roaring.MultiLog // one sublog per root:%ref (actual root is in the get index)
+	Channels  *roaring.MultiLog // one sublog per channel name
+	Mentions  *roaring.MultiLog // one sublog per mentioned ref (feed, message, or blob)
+	Backlinks *roaring.MultiLog // one sublog per linked-to message ref (backlink selectors: vote.link)
 
 	indexStore *badger.DB
 	boltDB     *bolt.DB
@@ -341,8 +342,9 @@ func New(fopts ...Option) (*Sbot, error) {
 		Name string
 		Mlog **roaring.MultiLog
 	}{
-		{"tangles", &s.Tangles},
-		{"mentions", &s.Mentions},
+		{"tangles",   &s.Tangles},
+		{"mentions",  &s.Mentions},
+		{"backlinks", &s.Backlinks},
 	}
 	for _, index := range sparseMlogs {
 		mlog, err := multibbolt.NewMultiLogWithDB(s.boltDB, "mlog:"+index.Name)
@@ -392,6 +394,7 @@ func New(fopts ...Option) (*Sbot, error) {
 		s.Tangles,
 		s.Channels,
 		s.Mentions,
+		s.Backlinks,
 		groupsHelperMlog,
 		sm,
 	)
@@ -798,6 +801,7 @@ func New(fopts ...Option) (*Sbot, error) {
 		s.Tangles,
 		s.Channels,
 		s.Mentions,
+		s.Backlinks,
 		s.ReceiveLog, s,
 		s.GraphBuilder,
 		s.SeqResolver,
@@ -971,6 +975,11 @@ func (s *Sbot) ReindexAll() error {
 	if addrs, err := s.Tangles.List(); err == nil {
 		for _, addr := range addrs {
 			s.Tangles.Delete(addr)
+		}
+	}
+	if addrs, err := s.Backlinks.List(); err == nil {
+		for _, addr := range addrs {
+			s.Backlinks.Delete(addr)
 		}
 	}
 	if addrs, err := s.Private.List(); err == nil {

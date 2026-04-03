@@ -198,6 +198,12 @@ func NewSubsetOpBySearch(queryStr string) SubsetOperation {
 	return SubsetOperation{operation: "search", string: queryStr}
 }
 
+// NewSubsetOpByBacklinks returns an operation that matches all messages linking
+// to the given message ref via any indexed backlink selector (e.g. vote.link).
+func NewSubsetOpByBacklinks(ref refs.MessageRef) SubsetOperation {
+	return SubsetOperation{operation: "backlinks", root: &ref}
+}
+
 // MarshalJSON turns a SubsetOperation into JSON for remote calls.
 func (so SubsetOperation) MarshalJSON() ([]byte, error) {
 	var m subsetOperationJSONMarshaler
@@ -265,6 +271,11 @@ func (so *SubsetOperation) UnmarshalJSON(input []byte) error {
 		}
 		so.root = m.Root
 		so.name = m.TangleName
+	case "backlinks":
+		if m.Root == nil {
+			return fmt.Errorf("subset: backlinks ref can't be empty")
+		}
+		so.root = m.Root
 	case "isRoot":
 		// no arguments needed
 	case "hasBlob":

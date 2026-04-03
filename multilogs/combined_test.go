@@ -98,6 +98,7 @@ func setupCombinedIndex(t testing.TB, rxlog margaret.Log[*multimsg.MultiMessage]
 	byType := mkMlog(t, testRepo, "byType", &mc)
 	channels := mkMlog(t, testRepo, "channels", &mc)
 	mentions := mkMlog(t, testRepo, "mentions", &mc)
+	backlinks := mkMlog(t, testRepo, "backlinks", &mc)
 	groupMembers := mkMlog(t, testRepo, "groupMembers", &mc)
 
 	idx, err := NewCombinedIndex(testPath,
@@ -111,6 +112,7 @@ func setupCombinedIndex(t testing.TB, rxlog margaret.Log[*multimsg.MultiMessage]
 		tangles,
 		channels,
 		mentions,
+		backlinks,
 		groupMembers,
 
 		sm,
