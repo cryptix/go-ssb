@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	margaret "github.com/ssbc/margaret/v2"
 	"go.mindeco.de/log"
 	"go.mindeco.de/log/level"
 
@@ -83,9 +82,15 @@ func (s *Sbot) newGraphReplicator() (*graphReplicator, error) {
 	replicateEvt := log.With(s.info, "event", "update-replicate")
 	update := r.makeUpdater(replicateEvt, s.KeyPair.ID(), int(s.hopCount))
 
-	// update for new messages but only once they didnt change in a while
-	// meaning, not while sync is busy with new incoming messages
-	go debounce(s.rootCtx, 30*time.Second, s.ReceiveLog, update)
+	// Populate the replication list once at startup from existing graph data.
+	// Hops() and Build() both wait for index sync internally, so this is safe
+	// to run concurrently with index loading.
+	go update()
+
+	// Re-run whenever the graph changes (new contact/metafeed messages).
+	// Uses GraphBuilder.Seq() so that non-contact messages don't trigger
+	// unnecessary hops recalculations.
+	go debounce(s.rootCtx, 30*time.Second, s.GraphBuilder, update)
 
 	return &r, nil
 }
@@ -130,13 +135,22 @@ type seqer interface {
 	Seq() int64
 }
 
-// debounce watches for changes in the receive log and calls work() after interval of no changes.
+// debounce watches rxlog.Seq() for changes and calls work() after interval of
+// no further changes. The timer is not armed at startup; work() only fires when
+// at least one change has been observed. This means rxlog controls what counts
+// as a "change" — passing GraphBuilder instead of ReceiveLog limits work() to
+// graph-relevant messages only.
 func debounce(ctx context.Context, interval time.Duration, rxlog seqer, work func()) {
-	var seqMu sync.Mutex
-	var seq = margaret.SeqEmpty
-	timer := time.NewTimer(interval)
+	var mu sync.Mutex
+	var pending bool
+	lastSeen := rxlog.Seq()
 
-	// poll the log sequence periodically
+	// Start the timer in a stopped state; it is only armed when a change is seen.
+	timer := time.NewTimer(interval)
+	if !timer.Stop() {
+		<-timer.C
+	}
+
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
@@ -146,12 +160,13 @@ func debounce(ctx context.Context, interval time.Duration, rxlog seqer, work fun
 				return
 			case <-ticker.C:
 				newSeq := rxlog.Seq()
-				seqMu.Lock()
-				if newSeq != seq {
-					seq = newSeq
+				mu.Lock()
+				if newSeq != lastSeen {
+					lastSeen = newSeq
+					pending = true
 					timer.Reset(interval)
 				}
-				seqMu.Unlock()
+				mu.Unlock()
 			}
 		}
 	}()
@@ -161,14 +176,15 @@ func debounce(ctx context.Context, interval time.Duration, rxlog seqer, work fun
 		select {
 		case <-ctx.Done():
 			return
-
 		case <-timer.C:
-			seqMu.Lock()
-			if seq != margaret.SeqEmpty {
+			mu.Lock()
+			if pending {
+				pending = false
+				mu.Unlock()
 				work()
-				seq = margaret.SeqEmpty
+			} else {
+				mu.Unlock()
 			}
-			seqMu.Unlock()
 		}
 	}
 }

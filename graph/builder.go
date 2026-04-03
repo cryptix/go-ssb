@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"sync"
+	"sync/atomic"
 
 	"github.com/ssbc/margaret/v2/multilog"
 	"go.mindeco.de/log"
@@ -59,6 +60,18 @@ type GraphBuilder struct {
 	cachedGraph *Graph
 
 	hmacSecret *[32]byte
+
+	// contactVersion is incremented each time a contact, announcement, or
+	// metafeed message is successfully indexed. It is used by the replicator's
+	// debounce loop to avoid recalculating hops when no graph-relevant messages
+	// have arrived.
+	contactVersion atomic.Int64
+}
+
+// Seq returns the number of graph-relevant messages indexed so far.
+// Implements the seqer interface used by the replication debounce loop.
+func (b *GraphBuilder) Seq() int64 {
+	return b.contactVersion.Load()
 }
 
 // BadgerBuilder is an alias for GraphBuilder for backwards compatibility.

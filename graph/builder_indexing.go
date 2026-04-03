@@ -146,6 +146,7 @@ func (b *GraphBuilder) updateContacts(_ int64, msg refs.Message) error {
 	}
 
 	b.cachedGraph = nil
+	b.contactVersion.Add(1)
 	return nil
 }
 
@@ -190,6 +191,7 @@ func (b *GraphBuilder) updateAnnouncement(_ int64, msg refs.Message) error {
 	}
 
 	b.cachedGraph = nil
+	b.contactVersion.Add(1)
 	return nil
 }
 
@@ -306,6 +308,7 @@ func (b *GraphBuilder) updateMetafeeds(_ int64, msg refs.Message) error {
 		return fmt.Errorf("failed to update metafeed index with message %s: %w", msg.Key().String(), err)
 	}
 
+	b.contactVersion.Add(1)
 	return nil
 }
 
