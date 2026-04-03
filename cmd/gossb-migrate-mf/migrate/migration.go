@@ -421,7 +421,10 @@ func getMessages(bot *sbot.Sbot, main refs.FeedRef, msgtype string) ([]refs.Mess
 		query.NewSubsetOpByAuthor(main),
 		query.NewSubsetOpByType(msgtype),
 	)
-	planner := query.NewSubsetPlaner(bot.Users, bot.ByType)
+	planner := query.NewSubsetPlaner(query.SubsetPlanerOptions{
+		Authors: bot.Users,
+		ByType:  bot.ByType,
+	})
 	msgs, err := planner.QuerySubsetMessages(bot.ReceiveLog, q)
 	inform(bot.ReceiveLog.Seq(), "messages in receive log")
 	if err != nil {

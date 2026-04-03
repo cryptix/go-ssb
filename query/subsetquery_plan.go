@@ -26,6 +26,22 @@ type Searcher interface {
 	Search(query string, limit int) (*sroar.Bitmap, error)
 }
 
+// SubsetPlanerOptions holds all indexes and dependencies for a SubsetPlaner.
+// All fields are optional (nil-safe); unset indexes cause their query ops to
+// return an error if invoked.
+type SubsetPlanerOptions struct {
+	Authors     *roaring.MultiLog
+	ByType      *roaring.MultiLog
+	Tangles     *roaring.MultiLog
+	Channels    *roaring.MultiLog
+	Mentions    *roaring.MultiLog
+	Backlinks   *roaring.MultiLog
+	RxLog       margaret.Log[*multimsg.MultiMessage]
+	Graph       graph.Builder
+	SeqResolver *repo.SequenceResolver
+	Search      Searcher
+}
+
 type SubsetPlaner struct {
 	authors, bytype *roaring.MultiLog
 	tangles         *roaring.MultiLog
@@ -44,57 +60,25 @@ type SubsetPlaner struct {
 	// graphBuilder provides access to the social follow/block graph
 	// for graph-aware query operations (followedBy, blockedBy, hops, friendsBlocks)
 	graphBuilder graph.Builder
-	search       Searcher // optional, may be nil
+	search       Searcher
 }
 
-// NewSubsetPlaner creates a new SubsetPlaner with author and type indexes.
-// For tangle query support, use NewSubsetPlanerWithTangles instead.
-func NewSubsetPlaner(authors, bytype *roaring.MultiLog) *SubsetPlaner {
+// NewSubsetPlaner creates a SubsetPlaner from the provided options.
+// All option fields are nil-safe; query operations that require an unset index
+// return an error when invoked.
+func NewSubsetPlaner(opts SubsetPlanerOptions) *SubsetPlaner {
 	return &SubsetPlaner{
-		authors: authors,
-		bytype:  bytype,
+		authors:      opts.Authors,
+		bytype:       opts.ByType,
+		tangles:      opts.Tangles,
+		channels:     opts.Channels,
+		mentions:     opts.Mentions,
+		backlinks:    opts.Backlinks,
+		rxLog:        opts.RxLog,
+		graphBuilder: opts.Graph,
+		seqResolver:  opts.SeqResolver,
+		search:       opts.Search,
 	}
-}
-
-// NewSubsetPlanerWithTangles creates a new SubsetPlaner with author, type, and tangle indexes.
-func NewSubsetPlanerWithTangles(authors, bytype, tangles *roaring.MultiLog) *SubsetPlaner {
-	return &SubsetPlaner{
-		authors: authors,
-		bytype:  bytype,
-		tangles: tangles,
-	}
-}
-
-// NewSubsetPlanerFull creates a SubsetPlaner with all available indexes.
-func NewSubsetPlanerFull(
-	authors, bytype, tangles *roaring.MultiLog,
-	channels, mentions *roaring.MultiLog,
-	rxLog margaret.Log[*multimsg.MultiMessage],
-	gb graph.Builder,
-	sr *repo.SequenceResolver,
-) *SubsetPlaner {
-	return &SubsetPlaner{
-		authors:      authors,
-		bytype:       bytype,
-		tangles:      tangles,
-		channels:     channels,
-		mentions:     mentions,
-		rxLog:        rxLog,
-		graphBuilder: gb,
-		seqResolver:  sr,
-	}
-}
-
-// WithSearch returns the planer configured with a full-text search index.
-func (sp *SubsetPlaner) WithSearch(s Searcher) *SubsetPlaner {
-	sp.search = s
-	return sp
-}
-
-// WithBacklinks returns the planer configured with a backlinks index.
-func (sp *SubsetPlaner) WithBacklinks(bl *roaring.MultiLog) *SubsetPlaner {
-	sp.backlinks = bl
-	return sp
 }
 
 // QuerySubsetBitmap evaluates the passed SubsetOperation and returns a bitmap which maps to messages in the receive log.
