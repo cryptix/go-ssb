@@ -90,13 +90,21 @@ func TestPersistence(t *testing.T) {
 	// dial up A->B, B->C
 	err = botA.Network.Connect(ctx, botB.Network.GetListenAddr())
 	r.NoError(err)
-	time.Sleep(1 * time.Second)
 	err = botB.Network.Connect(ctx, botC.Network.GetListenAddr())
 	r.NoError(err)
-	time.Sleep(1 * time.Second)
+
+	// wait for replication to complete across all bots
+	expectedSeq := int64(testMsgCount*len(theBots) - 1)
+	testutils.RequireEventually(t, func() bool {
+		for _, bot := range theBots {
+			if bot.ReceiveLog.Seq() < expectedSeq {
+				return false
+			}
+		}
+		return true
+	}, 15*time.Second, "replication did not complete across chain")
 
 	cancel()
-	time.Sleep(1 * time.Second)
 	for _, bot := range theBots {
 		err = bot.FSCK(FSCKWithMode(FSCKModeSequences))
 		a.NoError(err)

@@ -204,7 +204,6 @@ func TestFeedsLiveSimpleFour(t *testing.T) {
 	a.EqualValues(0, timeouts, "too many timeouts")
 
 	cancel()
-	time.Sleep(1 * time.Second)
 	for _, bot := range theBots {
 		err = bot.FSCK(FSCKWithMode(FSCKModeSequences))
 		a.NoError(err)
@@ -299,13 +298,16 @@ func TestFeedsLiveSimpleTwo(t *testing.T) {
 
 	err = bob.Network.Connect(ctx, ali.Network.GetListenAddr())
 	r.NoError(err)
-	time.Sleep(time.Second / 2)
 
 	alisLog, err := bob.Users.Get(storedrefs.Feed(ali.KeyPair.ID()))
 	r.NoError(err)
 
-	wantSeq := int64(0)
+	// wait for ali's contact message to replicate to bob
+	testutils.RequireEventually(t, func() bool {
+		return alisLog.Seq() >= 0
+	}, 10*time.Second, "ali's initial message did not replicate")
 
+	wantSeq := int64(0)
 	a.Equal(wantSeq, alisLog.Seq(), "after connect check")
 
 	// setup live listener
@@ -477,9 +479,7 @@ func TestFeedsLiveSimpleStar(t *testing.T) {
 	a.Equal(0, timeouts, "expected 0 timeouts")
 
 	// cleanup
-	time.Sleep(1 * time.Second)
 	cancel()
-	time.Sleep(1 * time.Second)
 	for bI, bot := range append(bLeafs, botA, botI) {
 		err := bot.FSCK(FSCKWithMode(FSCKModeSequences))
 		a.NoError(err, "botB%02d fsck", bI)
@@ -494,55 +494,32 @@ func initialSync(t testing.TB, theBots []*Sbot, expectedMsgCount int) {
 	r := require.New(t)
 	a := assert.New(t)
 
-initialSync:
-	for z := 3; z > 0; z-- {
-
-		for bI, botX := range theBots {
-			for bJ, botY := range theBots {
-				if bI == bJ {
-					continue
-				}
-				err := botX.Network.Connect(ctx, botY.Network.GetListenAddr())
-				r.NoError(err)
+	// connect every bot to every other bot
+	for bI, botX := range theBots {
+		for bJ, botY := range theBots {
+			if bI == bJ {
+				continue
 			}
-
-			time.Sleep(time.Second * 2) // settle sync
-			var (
-				complete = 0
-				broken   = false
-			)
-			for i, bot := range theBots {
-
-				if rootSeq := int(bot.ReceiveLog.Seq()); rootSeq == expectedMsgCount-1 {
-					complete++
-				} else {
-					if rootSeq > expectedMsgCount-1 {
-						err := bot.FSCK(FSCKWithMode(FSCKModeSequences))
-						if err != nil {
-							broken = true
-							t.Error(err)
-						}
-						t.Fatal("bot", i, "has more messages then expected:", rootSeq)
-					}
-					t.Log("init sync delay on bot", i, ": seq", rootSeq)
-				}
-			}
-			if broken {
-				t.Fatal()
-			}
-			if len(theBots) == complete {
-				t.Log("initsync done")
-				break initialSync
-			}
-			botX.Network.GetConnTracker().CloseAll()
-			t.Log("continuing initialSync.. bots complete:", complete)
+			err := botX.Network.Connect(ctx, botY.Network.GetListenAddr())
+			r.NoError(err)
 		}
 	}
 
-	var failed bool
-	// check fsck,sequences and and disconnect
-	for i, bot := range theBots {
+	// wait until all bots have replicated all messages
+	testutils.RequireEventually(t, func() bool {
+		for _, bot := range theBots {
+			if int(bot.ReceiveLog.Seq()) < expectedMsgCount-1 {
+				return false
+			}
+		}
+		return true
+	}, 30*time.Second, "initial sync did not complete")
 
+	t.Log("initsync done")
+
+	var failed bool
+	// check fsck,sequences and disconnect
+	for i, bot := range theBots {
 		if !a.EqualValues(expectedMsgCount, bot.ReceiveLog.Seq()+1, "wrong rxSeq on bot %d", i) {
 			failed = true
 		}
@@ -550,8 +527,9 @@ initialSync:
 		r.NoError(err, "FSCK error on bot %d", i)
 		ct := bot.Network.GetConnTracker()
 		ct.CloseAll()
-		time.Sleep(1 * time.Second)
-		r.EqualValues(ct.Count(), 0, "%d still has connectons", i)
+		testutils.RequireEventually(t, func() bool {
+			return ct.Count() == 0
+		}, 5*time.Second, "bot %d still has connections", i)
 	}
 
 	if failed {

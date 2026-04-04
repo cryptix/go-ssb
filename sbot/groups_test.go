@@ -142,7 +142,6 @@ func TestPrivateGroupsManualDecrypt(t *testing.T) {
 	tal.Replicate(srh.KeyPair.ID())
 	err = srh.Network.Connect(ctx, tal.Network.GetListenAddr())
 	r.NoError(err)
-	time.Sleep(1 * time.Second)
 
 	// some length checks
 	srhsFeeds, ok := srh.GetMultiLog("userFeeds")
@@ -154,6 +153,11 @@ func TestPrivateGroupsManualDecrypt(t *testing.T) {
 	r.True(ok)
 	talsCopyOfSrh, err := talsFeeds.Get(storedrefs.Feed(srh.KeyPair.ID()))
 	r.NoError(err)
+
+	// wait until replication completes
+	testutils.RequireEventually(t, func() bool {
+		return srhsCopyOfTal.Seq() >= 1 && talsCopyOfSrh.Seq() >= 5
+	}, 10*time.Second, "replication did not complete")
 
 	// did we get the expected number of messages?
 	r.EqualValues(1, srhsCopyOfTal.Seq())
@@ -187,10 +191,17 @@ func TestPrivateGroupsManualDecrypt(t *testing.T) {
 	edp, has := srh.Network.GetEndpointFor(tal.KeyPair.ID())
 	r.True(has)
 	edp.Terminate()
-	time.Sleep(1 * time.Second)
+	// wait for disconnect to complete
+	testutils.RequireEventually(t, func() bool {
+		_, has := srh.Network.GetEndpointFor(tal.KeyPair.ID())
+		return !has
+	}, 5*time.Second, "disconnect did not complete")
 	err = srh.Network.Connect(ctx, tal.Network.GetListenAddr())
 	r.NoError(err)
-	time.Sleep(1 * time.Second)
+	// wait for reply to replicate
+	testutils.RequireEventually(t, func() bool {
+		return srhsCopyOfTal.Seq() >= 2
+	}, 10*time.Second, "reply did not replicate")
 
 	r.EqualValues(2, srhsCopyOfTal.Seq())
 
@@ -249,6 +260,16 @@ func TestPrivateGroupsManualDecrypt(t *testing.T) {
 	r.NoError(tal.Close())
 	r.NoError(srh.Close())
 	r.NoError(botgroup.Wait())
+}
+
+// countType returns the number of messages for a given type address in a multilog.
+// Returns 0 if the address doesn't exist or on error.
+func countType(ml *roaring.MultiLog, addr string) int {
+	sublog, err := ml.Get(multilog.Addr(addr))
+	if err != nil {
+		return 0
+	}
+	return int(sublog.Seq() + 1)
 }
 
 // TODO: somehow the Membership/Reindex functionality doesn't kick in.
@@ -352,7 +373,12 @@ func XTestGroupsReindex(t *testing.T) {
 	err = srh.Network.Connect(ctx, tal.Network.GetListenAddr())
 	r.NoError(err)
 
-	time.Sleep(2 * time.Second) // let them sync
+	// wait until both have replicated
+	testutils.RequireEventually(t, func() bool {
+		srhPosts := countType(srh.ByType, "string:post")
+		talPosts := countType(tal.ByType, "string:post")
+		return srhPosts >= 10 && talPosts >= 10
+	}, 10*time.Second, "replication of posts did not complete")
 
 	// check that they both have the messages
 	chkCount(srh.ByType)("string:post", 10)
@@ -372,7 +398,12 @@ func XTestGroupsReindex(t *testing.T) {
 	srh.Network.GetConnTracker().CloseAll()
 	err = tal.Network.Connect(ctx, srh.Network.GetListenAddr())
 	r.NoError(err)
-	time.Sleep(2 * time.Second) // let them sync
+
+	srhsCopyOfTalUsers, err := srh.Users.Get(storedrefs.Feed(tal.KeyPair.ID()))
+	r.NoError(err)
+	testutils.RequireEventually(t, func() bool {
+		return srhsCopyOfTalUsers.Seq() >= 10
+	}, 10*time.Second, "srh did not replicate tal's messages")
 
 	chkCount(srh.Users)(storedrefs.Feed(tal.KeyPair.ID()), 11)
 
@@ -410,31 +441,15 @@ func XTestGroupsReindex(t *testing.T) {
 	talsLog, err := raz.Users.Get(storedrefs.Feed(tal.KeyPair.ID()))
 	r.NoError(err)
 
-	// TODO: stupid hack because somehow we dont get the feed every time.... :'(
-	// related to the syncing logic, not the reindexing.
-	i := 5
-	for i > 0 {
-		t.Log("tries left", i)
-		raz.Network.GetConnTracker().CloseAll()
-		time.Sleep(1 * time.Second) // let them sync
+	// connect raz to both other bots and wait for replication
+	err = raz.Network.Connect(ctx, srh.Network.GetListenAddr())
+	r.NoError(err)
+	err = raz.Network.Connect(ctx, tal.Network.GetListenAddr())
+	r.NoError(err)
 
-		// connect to the two other bots
-		err = raz.Network.Connect(ctx, srh.Network.GetListenAddr())
-		r.NoError(err)
-		err = raz.Network.Connect(ctx, tal.Network.GetListenAddr())
-		r.NoError(err)
-
-		time.Sleep(5 * time.Second) // let them sync
-
-		// how many messages does raz have from tal?
-		if talsLog.Seq() == 10 {
-			t.Log("received all of tal's messages")
-			break
-		}
-
-		i--
-	}
-	r.NotEqual(0, i, "did not get the feed in %d tries", 5)
+	testutils.RequireEventually(t, func() bool {
+		return talsLog.Seq() >= 10
+	}, 30*time.Second, "raz did not replicate all of tal's messages")
 
 	chkCount(srh.Users)(storedrefs.Feed(tal.KeyPair.ID()), 11)
 	chkCount(raz.Users)(storedrefs.Feed(tal.KeyPair.ID()), 11)

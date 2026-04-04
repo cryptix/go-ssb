@@ -117,19 +117,9 @@ func TestBlobsPair(t *testing.T) {
 	bobCT := bob.Network.GetConnTracker()
 	aliCT.CloseAll()
 	bobCT.CloseAll()
-	i := 0
-	an := aliCT.Count()
-	bn := bobCT.Count()
-	for an != 0 || bn != 0 {
-		time.Sleep(750 * time.Millisecond)
-		info.Log("event", "waited after close", "i", i, "a", an, "b", bn)
-		i++
-		if i > 10 {
-			t.Fatal("retried waiting for close")
-		}
-		an = aliCT.Count()
-		bn = bobCT.Count()
-	}
+	testutils.RequireEventually(t, func() bool {
+		return aliCT.Count() == 0 && bobCT.Count() == 0
+	}, 10*time.Second, "connections did not close")
 
 	/* TODO: this fails _sometimes_
 
@@ -228,7 +218,6 @@ func blockUntilBlob(bot *Sbot, want refs.BlobRef) {
 
 func (s *session) simple(t *testing.T) {
 	r := require.New(t)
-	a := assert.New(t)
 
 	s.redial(t)
 
@@ -243,15 +232,14 @@ func (s *session) simple(t *testing.T) {
 	err = s.alice.WantManager.Want(ref)
 	r.NoError(err)
 
-	time.Sleep(testDelay)
-
-	_, err = s.alice.BlobStore.Get(ref)
-	a.NoError(err)
+	testutils.RequireEventually(t, func() bool {
+		_, err := s.alice.BlobStore.Get(ref)
+		return err == nil
+	}, 15*time.Second, "alice did not receive blob")
 }
 
 func (s *session) wantFirst(t *testing.T) {
 	r := require.New(t)
-	a := assert.New(t)
 
 	// blob action
 	randBuf := make([]byte, blobSize)
@@ -266,16 +254,15 @@ func (s *session) wantFirst(t *testing.T) {
 
 	s.redial(t)
 
-	time.Sleep(testDelay)
-
-	_, err = s.alice.BlobStore.Get(ref)
-	a.NoError(err)
+	testutils.RequireEventually(t, func() bool {
+		_, err := s.alice.BlobStore.Get(ref)
+		return err == nil
+	}, 15*time.Second, "alice did not receive blob after redial")
 
 }
 
 func (s *session) eachOne(t *testing.T) {
 	r := require.New(t)
-	a := assert.New(t)
 
 	// blob action
 	randOne := make([]byte, blobSize)
@@ -298,17 +285,15 @@ func (s *session) eachOne(t *testing.T) {
 	err = s.bob.WantManager.Want(refTwo)
 	r.NoError(err)
 
-	time.Sleep(testDelay)
-
-	_, err = s.alice.BlobStore.Get(refOne)
-	a.NoError(err)
-	_, err = s.bob.BlobStore.Get(refTwo)
-	a.NoError(err)
+	testutils.RequireEventually(t, func() bool {
+		_, e1 := s.alice.BlobStore.Get(refOne)
+		_, e2 := s.bob.BlobStore.Get(refTwo)
+		return e1 == nil && e2 == nil
+	}, 15*time.Second, "blobs did not transfer in both directions")
 }
 
 func (s *session) eachOneConnet(t *testing.T) {
 	r := require.New(t)
-	a := assert.New(t)
 
 	// blob action
 	randOne := make([]byte, blobSize)
@@ -331,17 +316,15 @@ func (s *session) eachOneConnet(t *testing.T) {
 	err = s.bob.WantManager.Want(refTwo)
 	r.NoError(err)
 
-	time.Sleep(testDelay)
-
-	_, err = s.alice.BlobStore.Get(refOne)
-	a.NoError(err)
-	_, err = s.bob.BlobStore.Get(refTwo)
-	a.NoError(err)
+	testutils.RequireEventually(t, func() bool {
+		_, e1 := s.alice.BlobStore.Get(refOne)
+		_, e2 := s.bob.BlobStore.Get(refTwo)
+		return e1 == nil && e2 == nil
+	}, 15*time.Second, "blobs did not transfer after connect-then-want")
 }
 
 func (s *session) eachOnBothWant(t *testing.T) {
 	r := require.New(t)
-	a := assert.New(t)
 
 	// blob action
 	randOne := make([]byte, blobSize)
@@ -364,12 +347,11 @@ func (s *session) eachOnBothWant(t *testing.T) {
 
 	s.redial(t)
 
-	time.Sleep(5 * time.Second)
-
-	_, err = s.alice.BlobStore.Get(refOne)
-	a.NoError(err)
-	_, err = s.bob.BlobStore.Get(refTwo)
-	a.NoError(err)
+	testutils.RequireEventually(t, func() bool {
+		_, e1 := s.alice.BlobStore.Get(refOne)
+		_, e2 := s.bob.BlobStore.Get(refTwo)
+		return e1 == nil && e2 == nil
+	}, 15*time.Second, "blobs did not transfer with both wanting")
 }
 
 // check that we can get blobs from C to A through B
@@ -444,8 +426,6 @@ func TestBlobsWithHops(t *testing.T) {
 	err = bob.Network.Connect(ctx, cle.Network.GetListenAddr())
 	r.NoError(err)
 
-	time.Sleep(1 * time.Second)
-
 	// blob action
 	n := blobSize
 	randBuf := make([]byte, n)
@@ -457,13 +437,9 @@ func TestBlobsWithHops(t *testing.T) {
 	err = ali.WantManager.Want(ref)
 	r.NoError(err)
 
-	for i := 0; ali.WantManager.Wants(ref); i++ {
-		time.Sleep(1 * time.Second)
-		if i > 15 {
-			t.Error("want timeout")
-			break
-		}
-	}
+	testutils.RequireEventually(t, func() bool {
+		return !ali.WantManager.Wants(ref)
+	}, 30*time.Second, "ali still wants the blob")
 
 	_, err = ali.BlobStore.Get(ref)
 	a.NoError(err)
@@ -561,7 +537,6 @@ func TestBlobsTooBig(t *testing.T) {
 
 	err = bob.Network.Connect(ctx, ali.Network.GetListenAddr())
 	r.NoError(err)
-	time.Sleep(1 * time.Second)
 
 	// </testSetup>
 
@@ -593,7 +568,11 @@ func TestBlobsTooBig(t *testing.T) {
 	err = bob.WantManager.Want(okayRef)
 	r.NoError(err)
 
-	time.Sleep(3 * time.Second)
+	// The okay-sized blob should transfer; the too-large one should not
+	testutils.RequireEventually(t, func() bool {
+		_, err := bob.BlobStore.Get(okayRef)
+		return err == nil
+	}, 15*time.Second, "bob did not receive the okay-sized blob")
 
 	_, err = bob.BlobStore.Get(okayRef)
 	a.NoError(err)

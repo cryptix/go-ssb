@@ -107,17 +107,18 @@ func TestFeedsGabbySync(t *testing.T) {
 	err = bob.Network.Connect(ctx, ali.Network.GetListenAddr())
 	r.NoError(err)
 
-	// give time to sync
-	time.Sleep(3 * time.Second)
-	// be done
-	ali.Network.GetConnTracker().CloseAll()
-
 	// check that bobs messages got to ali
 	auf, ok := ali.GetMultiLog("userFeeds")
 	r.True(ok)
 	bosLogAtAli, err := auf.Get(storedrefs.Feed(bob.KeyPair.ID()))
 	r.NoError(err)
 
+	// wait until ali has replicated all of bob's messages
+	testutils.RequireEventually(t, func() bool {
+		return bosLogAtAli.Seq() >= int64(9)
+	}, 10*time.Second, "ali did not replicate bob's 10 messages")
+
+	ali.Network.GetConnTracker().CloseAll()
 	r.Equal(int64(9), bosLogAtAli.Seq())
 
 	qry := mutil.Indirect(ali.ReceiveLog, bosLogAtAli).Query()
@@ -133,7 +134,6 @@ func TestFeedsGabbySync(t *testing.T) {
 	cancel()
 	ali.Shutdown()
 	bob.Shutdown()
-	time.Sleep(1 * time.Second)
 	r.NoError(ali.Close())
 	r.NoError(bob.Close())
 
