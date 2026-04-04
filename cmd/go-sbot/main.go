@@ -432,12 +432,10 @@ func runSbot() error {
 		level.Warn(log).Log("event", "killed", "msg", "received signal, shutting down", "signal", sig.String())
 		cancel()
 		sbot.Shutdown()
-		time.Sleep(2 * time.Second)
 
 		err := sbot.Close()
 		checkAndLog(err)
 
-		time.Sleep(2 * time.Second)
 		os.Exit(0)
 	}()
 	logging.SetCloseChan(c)

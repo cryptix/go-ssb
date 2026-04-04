@@ -55,7 +55,7 @@ func newClientWithOptions(opts []Option) (*Client, error) {
 	}
 
 	if c.rootCtx == nil {
-		c.rootCtx = context.TODO()
+		c.rootCtx = context.Background()
 	}
 	c.rootCtx, c.rootCtxCancel = context.WithCancel(c.rootCtx)
 

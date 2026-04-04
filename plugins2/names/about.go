@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/dgraph-io/badger/v3"
 	margaret "github.com/ssbc/margaret/v2"
@@ -52,9 +51,7 @@ func (ab aboutStore) startIndexing() {
 }
 
 func (ab aboutStore) doneIndexing() {
-	time.AfterFunc(100*time.Millisecond, func() {
-		ab.idxInSync.Done()
-	})
+	ab.idxInSync.Done()
 }
 
 func (ab aboutStore) ImageFor(ref *refs.FeedRef) (*refs.BlobRef, error) {

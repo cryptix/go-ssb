@@ -42,6 +42,8 @@ type FeedManager struct {
 	liveFeeds    map[string]*luigiutils.MultiSink
 	liveFeedsMut sync.Mutex
 
+	serveWg sync.WaitGroup // tracks the serveLiveFeeds goroutine
+
 	// metrics
 	sysGauge metrics.Gauge
 	sysCtr   metrics.Counter
@@ -66,21 +68,26 @@ func NewFeedManager(
 		sysGauge:   sysGauge,
 		liveFeeds:  make(map[string]*luigiutils.MultiSink),
 	}
-	// QUESTION: How should the error case be handled?
-	go fm.serveLiveFeeds()
+	fm.serveWg.Add(1)
+	go func() {
+		defer fm.serveWg.Done()
+		fm.serveLiveFeeds()
+	}()
 	return fm
 }
 
-// Close shuts down all live feed sinks. After Close, no new messages
-// will be forwarded to registered sinks.
+// Close shuts down all live feed sinks and waits for the serveLiveFeeds
+// goroutine to exit. After Close, no new messages will be forwarded to
+// registered sinks.
 func (m *FeedManager) Close() {
 	m.liveFeedsMut.Lock()
-	defer m.liveFeedsMut.Unlock()
-
 	for id, sink := range m.liveFeeds {
 		sink.Close()
 		delete(m.liveFeeds, id)
 	}
+	m.liveFeedsMut.Unlock()
+
+	m.serveWg.Wait()
 }
 
 func (m *FeedManager) serveLiveFeeds() {

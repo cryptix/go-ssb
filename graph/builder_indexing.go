@@ -7,7 +7,6 @@ package graph
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	margaret "github.com/ssbc/margaret/v2"
 	"github.com/zeebo/bencode"
@@ -37,10 +36,7 @@ func (b *GraphBuilder) indexSyncStart() {
 }
 
 func (b *GraphBuilder) indexSyncDone() {
-	// this delay is here so that the WaitGroup is held while serveIndex processes the next entry
-	time.AfterFunc(100*time.Millisecond, func() {
-		b.idxInSync.Done()
-	})
+	b.idxInSync.Done()
 }
 
 // WaitUntilIndexesAreSynced blocks until all the index processing is in sync with the rootlog

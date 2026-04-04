@@ -38,22 +38,39 @@ func (bcst *BlobStoreBroadcast) Register(sink ssb.BlobStoreEmitter) ssb.CancelFu
 
 func (bcst *BlobStoreBroadcast) EmitBlob(nf ssb.BlobStoreNotification) error {
 	bcst.mu.Lock()
-	defer bcst.mu.Unlock()
-
+	// Copy sinks to a slice so we can release the lock before emitting.
+	sinks := make([]*ssb.BlobStoreEmitter, 0, len(bcst.sinks))
 	for s := range bcst.sinks {
-		go bcst.emit(s, nf)
+		sinks = append(sinks, s)
+	}
+	bcst.mu.Unlock()
+
+	var failed []*ssb.BlobStoreEmitter
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	wg.Add(len(sinks))
+	for _, s := range sinks {
+		go func(s *ssb.BlobStoreEmitter) {
+			defer wg.Done()
+			if err := (*s).EmitBlob(nf); err != nil {
+				mu.Lock()
+				failed = append(failed, s)
+				mu.Unlock()
+			}
+		}(s)
+	}
+	wg.Wait()
+
+	if len(failed) > 0 {
+		bcst.mu.Lock()
+		for _, s := range failed {
+			delete(bcst.sinks, s)
+		}
+		bcst.mu.Unlock()
 	}
 
 	return nil
-}
-
-func (bcst *BlobStoreBroadcast) emit(s *ssb.BlobStoreEmitter, nf ssb.BlobStoreNotification) {
-	err := (*s).EmitBlob(nf)
-	if err != nil {
-		bcst.mu.Lock()
-		delete(bcst.sinks, s)
-		bcst.mu.Unlock()
-	}
 }
 
 func (bcst *BlobStoreBroadcast) Close() error {

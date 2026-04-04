@@ -143,6 +143,7 @@ func (s *Sbot) serveIndexFrom(name string, idx LogIndexer, msgs margaret.Log[*mu
 		}
 
 		ctx, cancel := context.WithCancel(s.rootCtx)
+		defer cancel()
 		go func() {
 			p := progress.NewTicker(ctx, &ps, remaining, 7*time.Second)
 			pinfo := log.With(level.Info(logger), "event", "index-progress")
@@ -158,7 +159,6 @@ func (s *Sbot) serveIndexFrom(name string, idx LogIndexer, msgs margaret.Log[*mu
 		}()
 
 		err := idx.Index(msgs)
-		cancel()
 		s.indexSyncDone()
 		if errors.Is(err, ssb.ErrShuttingDown) || errors.Is(err, context.Canceled) {
 			return nil
@@ -184,10 +184,7 @@ func (s *Sbot) serveIndexFrom(name string, idx LogIndexer, msgs margaret.Log[*mu
 		for range qry.Iter() {
 			s.indexSyncStart()
 			err := idx.Index(msgs)
-			// delay the done to give a little time in case more messages arrive
-			time.AfterFunc(100*time.Millisecond, func() {
-				s.indexSyncDone()
-			})
+			s.indexSyncDone()
 			if err != nil {
 				if errors.Is(err, ssb.ErrShuttingDown) || errors.Is(err, context.Canceled) {
 					return nil

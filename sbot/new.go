@@ -310,6 +310,7 @@ func New(fopts ...Option) (*Sbot, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.closers.AddCloser(s.indexStore)
 
 	boltPath := storageRepo.GetPath(repo.PrefixIndex, "bolt.db")
 	os.MkdirAll(filepath.Dir(boltPath), 0700)
@@ -317,6 +318,7 @@ func New(fopts ...Option) (*Sbot, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sbot: failed to open bolt db: %w", err)
 	}
+	s.closers.AddCloser(s.boltDB)
 
 	// Dense multilogs — backed by filesystem (few sublogs, large bitmaps).
 	var denseMlogs = []struct {
@@ -494,9 +496,8 @@ func New(fopts ...Option) (*Sbot, error) {
 	aboutIdx := namesPlug.OpenSharedIndex(s.indexStore)
 	s.serveIndexFrom("abouts", aboutIdx, aboutsOnly)
 
-	// need to close s.indexStore and boltDB _after_ the all the indexes closed and flushed
-	s.closers.AddCloser(s.indexStore)
-	s.closers.AddCloser(s.boltDB)
+	// indexStore and boltDB are registered in closers immediately after opening (above).
+	// Since MultiCloser closes in LIFO order, they will be closed after all indexes.
 
 	// which feeds to replicate (only needed when networking is enabled)
 	if !s.disableNetwork {
@@ -587,11 +588,14 @@ func New(fopts ...Option) (*Sbot, error) {
 
 	var inviteService *legacyinvites.Service
 
-	// muxrpc handler creation and authoratization decider
+	// muxrpc handler creation and authorization decider
 	mkHandler := func(conn net.Conn) (muxrpc.Handler, error) {
-		// bypassing badger-close bug to go through with an accept (or not) before closing the bot
 		s.closedMu.Lock()
-		defer s.closedMu.Unlock()
+		closed := s.closed
+		s.closedMu.Unlock()
+		if closed {
+			return nil, fmt.Errorf("sbot: shutting down, rejecting connection")
+		}
 
 		remote, err := ssb.GetFeedRefFromAddr(conn.RemoteAddr())
 		if err != nil {
@@ -1030,11 +1034,24 @@ func (s *Sbot) Close() error {
 		level.Debug(closeEvt).Log("msg", "connections closed")
 	}
 
-	if err := s.idxDone.Wait(); err != nil {
-		if s.closeErr == nil {
-			s.closeErr = fmt.Errorf("sbot: index group shutdown failed: %w", err)
+	// Wait for index goroutines with a timeout to prevent hanging shutdown.
+	idxDoneCh := make(chan error, 1)
+	go func() {
+		idxDoneCh <- s.idxDone.Wait()
+	}()
+	select {
+	case err := <-idxDoneCh:
+		if err != nil {
+			if s.closeErr == nil {
+				s.closeErr = fmt.Errorf("sbot: index group shutdown failed: %w", err)
+			}
+			level.Warn(closeEvt).Log("msg", "index group had errors", "err", err)
 		}
-		level.Warn(closeEvt).Log("msg", "index group had errors", "err", err)
+	case <-time.After(30 * time.Second):
+		level.Error(closeEvt).Log("msg", "index group shutdown timed out after 30s")
+		if s.closeErr == nil {
+			s.closeErr = fmt.Errorf("sbot: index group shutdown timed out")
+		}
 	}
 	level.Debug(closeEvt).Log("msg", "waited for indexes to close")
 
