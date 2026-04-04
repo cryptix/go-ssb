@@ -41,16 +41,12 @@ func (sbot *Sbot) Status() (ssb.Status, error) {
 	}
 
 	var idxState ssb.IndexStates
-	sbot.indexStateMu.Lock()
-
-	for n, s := range sbot.indexStates {
+	for n, s := range sbot.idxMgr.IndexStates() {
 		idxState = append(idxState, ssb.IndexState{
 			Name:  n,
 			State: s,
 		})
 	}
-
-	sbot.indexStateMu.Unlock()
 
 	sort.Sort(byName(idxState))
 	s.Indicies = idxState

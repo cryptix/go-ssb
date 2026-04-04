@@ -14,7 +14,7 @@ import (
 )
 
 func (s *Sbot) Get(ref refs.MessageRef) (refs.Message, error) {
-	getIdx, ok := s.simpleIndex["get"]
+	getIdx, ok := s.idxMgr.GetSimpleIndex("get")
 	if !ok {
 		return nil, fmt.Errorf("sbot: get index disabled")
 	}

@@ -23,7 +23,6 @@ import (
 	"github.com/rs/cors"
 	"github.com/ssbc/go-muxrpc/v3"
 	"github.com/ssbc/go-netwrap"
-	mindexes "github.com/ssbc/margaret/v2/indexes"
 	"github.com/ssbc/margaret/v2/multilog"
 	"github.com/ssbc/margaret/v2/multilog/roaring"
 	multibbolt "github.com/ssbc/margaret/v2/multilog/roaring/bbolt"
@@ -31,8 +30,6 @@ import (
 	bolt "go.etcd.io/bbolt"
 	"go.mindeco.de/log"
 	"go.mindeco.de/log/level"
-	"golang.org/x/sync/errgroup"
-
 	"github.com/ssbc/go-ssb"
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb/blobstore"
@@ -81,13 +78,11 @@ type Sbot struct {
 
 	rootCtx context.Context
 	// Shutdown needs to be called to shutdown indexing
-	Shutdown      context.CancelFunc
-	closers       multicloser.MultiCloser
-	combIdx       *multilogs.CombinedIndex
-	feedManager   *gossip.FeedManager
-	idxDone       errgroup.Group
-	idxInSync     sync.WaitGroup
-	idxNumSyncing int64
+	Shutdown    context.CancelFunc
+	closers     multicloser.MultiCloser
+	combIdx     *multilogs.CombinedIndex
+	feedManager *gossip.FeedManager
+	idxMgr      *IndexManager
 
 	closed   bool
 	closedMu sync.Mutex
@@ -150,14 +145,8 @@ type Sbot struct {
 	indexStore *badger.DB
 	boltDB     *bolt.DB
 
-	// plugin indexes
-	mlogIndicies map[string]*roaring.MultiLog
-	simpleIndex  map[string]mindexes.Index[int64]
-
 	liveIndexUpdates     bool
 	skipConsistencyCheck bool
-	indexStateMu         sync.Mutex
-	indexStates          map[string]string
 
 	ebtState   *statematrix.StateMatrix
 	ebtHandler *ebt.MUXRPCHandler
@@ -191,10 +180,6 @@ func New(fopts ...Option) (*Sbot, error) {
 
 	s.public = ssb.NewPluginManager()
 	s.master = ssb.NewPluginManager()
-
-	s.mlogIndicies = make(map[string]*roaring.MultiLog)
-	s.simpleIndex = make(map[string]mindexes.Index[int64])
-	s.indexStates = make(map[string]string)
 
 	s.disableLegacyLiveReplication = true
 
@@ -262,6 +247,8 @@ func New(fopts ...Option) (*Sbot, error) {
 	}
 	s.closers.AddCloser(s.ReceiveLog.(io.Closer))
 
+	s.idxMgr = NewIndexManager(s.info, s.rootCtx, s.ReceiveLog, s.liveIndexUpdates)
+
 	// if not configured
 	if s.BlobStore == nil {
 		// load default, local file blob store
@@ -307,7 +294,7 @@ func New(fopts ...Option) (*Sbot, error) {
 	}
 	idxTimestamps := indexes.NewTimestampSorter(s.SeqResolver)
 	s.closers.AddCloser(idxTimestamps)
-	s.serveIndex("timestamps", idxTimestamps)
+	s.idxMgr.ServeIndex("timestamps", idxTimestamps)
 
 	s.indexStore, err = repo.OpenBadgerDB(storageRepo.GetPath(repo.PrefixMultiLog, "shared-badger"))
 	if err != nil {
@@ -336,7 +323,7 @@ func New(fopts ...Option) (*Sbot, error) {
 	for _, index := range denseMlogs {
 		mlog := multifs.NewMultiLog(storageRepo.GetPath(repo.PrefixMultiLog, index.Name))
 		s.closers.AddCloser(mlog)
-		s.mlogIndicies[index.Name] = mlog
+		s.idxMgr.RegisterMultiLog(index.Name, mlog)
 		*index.Mlog = mlog
 	}
 
@@ -357,7 +344,7 @@ func New(fopts ...Option) (*Sbot, error) {
 			return nil, fmt.Errorf("sbot: failed to open bbolt multilog %s: %w", index.Name, err)
 		}
 		s.closers.AddCloser(mlog)
-		s.mlogIndicies[index.Name] = mlog
+		s.idxMgr.RegisterMultiLog(index.Name, mlog)
 		*index.Mlog = mlog
 	}
 
@@ -376,8 +363,8 @@ func New(fopts ...Option) (*Sbot, error) {
 
 	// get(msgRef) -> rxLog sequence index
 	getIdx, getIdxSink := indexes.OpenGet(s.indexStore)
-	s.serveIndex("get", getIdxSink)
-	s.simpleIndex["get"] = getIdx
+	s.idxMgr.ServeIndex("get", getIdxSink)
+	s.idxMgr.RegisterSimpleIndex("get", getIdx)
 
 	// groups2
 	keysStore := keys.NewStore(s.indexStore, []byte("group-and-signing"))
@@ -422,7 +409,7 @@ func New(fopts ...Option) (*Sbot, error) {
 	}
 
 	s.combIdx = combIdx
-	s.serveIndex("combined", combIdx)
+	s.idxMgr.ServeIndex("combined", combIdx)
 	s.closers.AddCloser(combIdx)
 
 	// full-text search index (optional)
@@ -432,7 +419,7 @@ func New(fopts ...Option) (*Sbot, error) {
 			return nil, fmt.Errorf("sbot: failed to open search index: %w", err)
 		}
 		s.SearchIndex = searchIdx
-		s.serveIndex("search", searchIdx)
+		s.idxMgr.ServeIndex("search", searchIdx)
 		s.closers.AddCloser(searchIdx)
 	}
 
@@ -453,7 +440,7 @@ func New(fopts ...Option) (*Sbot, error) {
 	}
 	justAddMemberMsgs := mutil.Indirect(s.ReceiveLog, addMemberSeqs)
 
-	s.serveIndexFrom("group-members", members, justAddMemberMsgs)
+	s.idxMgr.ServeIndexFrom("group-members", members, justAddMemberMsgs)
 
 	/* TODO: fix deadlock in index update locking
 	if _, ok := s.simpleIndex["content-delete-requests"]; !ok {
@@ -483,8 +470,9 @@ func New(fopts ...Option) (*Sbot, error) {
 	justContacts := mutil.Indirect(s.ReceiveLog, contactLog)
 
 	// fill the index
-	s.serveIndexFrom("contacts", contactsIdx, justContacts)
+	s.idxMgr.ServeIndexFrom("contacts", contactsIdx, justContacts)
 	s.GraphBuilder = gb
+	s.idxMgr.SetGraphSyncer(gb)
 
 	// abouts
 
@@ -497,7 +485,7 @@ func New(fopts ...Option) (*Sbot, error) {
 
 	var namesPlug names.Plugin
 	aboutIdx := namesPlug.OpenSharedIndex(s.indexStore)
-	s.serveIndexFrom("abouts", aboutIdx, aboutsOnly)
+	s.idxMgr.ServeIndexFrom("abouts", aboutIdx, aboutsOnly)
 
 	// indexStore and boltDB are registered in closers immediately after opening (above).
 	// Since MultiCloser closes in LIFO order, they will be closed after all indexes.
@@ -569,7 +557,7 @@ func New(fopts ...Option) (*Sbot, error) {
 		justMetafeedMessages := repo.NewFilteredLog(s.ReceiveLog, graph.IsMetafeedMessage)
 
 		mfIdx := gb.OpenMetafeedsIndex()
-		s.serveIndexFrom("metafeed", mfIdx, justMetafeedMessages)
+		s.idxMgr.ServeIndexFrom("metafeed", mfIdx, justMetafeedMessages)
 
 		// 2) metafeed/announce on normal format
 		byTypeAnnouncementSeqs, err := s.ByType.Get(multilog.Addr("string:metafeed/announce"))
@@ -581,7 +569,7 @@ func New(fopts ...Option) (*Sbot, error) {
 		byTypeAnnouncements := mutil.Indirect(s.ReceiveLog, byTypeAnnouncementSeqs)
 
 		announcementIdx := gb.OpenAnnouncementIndex()
-		s.serveIndexFrom("metafeed announcements", announcementIdx, byTypeAnnouncements)
+		s.idxMgr.ServeIndexFrom("metafeed announcements", announcementIdx, byTypeAnnouncements)
 	}
 
 	// from here on just network related stuff
@@ -1042,7 +1030,7 @@ func (s *Sbot) Close() error {
 	// Wait for index goroutines with a timeout to prevent hanging shutdown.
 	idxDoneCh := make(chan error, 1)
 	go func() {
-		idxDoneCh <- s.idxDone.Wait()
+		idxDoneCh <- s.idxMgr.Wait()
 	}()
 	select {
 	case err := <-idxDoneCh:

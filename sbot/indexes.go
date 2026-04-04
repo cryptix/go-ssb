@@ -5,226 +5,40 @@
 package sbot
 
 import (
-	"context"
-	"errors"
-	"fmt"
-	"sync"
-	"sync/atomic"
-	"time"
-
-	"github.com/machinebox/progress"
-	margaret "github.com/ssbc/margaret/v2"
-	"github.com/ssbc/margaret/v2/indexes"
+	mindexes "github.com/ssbc/margaret/v2/indexes"
 	"github.com/ssbc/margaret/v2/multilog/roaring"
-	"go.mindeco.de/log"
-	"go.mindeco.de/log/level"
 
 	"github.com/ssbc/go-ssb"
-	"github.com/ssbc/go-ssb/message/multimsg"
 )
-
-// LogIndexer is implemented by all indexes that process messages from a margaret log.
-type LogIndexer interface {
-	Index(margaret.Log[*multimsg.MultiMessage]) error
-}
-
-func (s *Sbot) GetSimpleIndex(name string) (indexes.Index[int64], bool) {
-	si, has := s.simpleIndex[name]
-	return si, has
-}
-
-func (s *Sbot) GetMultiLog(name string) (*roaring.MultiLog, bool) {
-	ml, has := s.mlogIndicies[name]
-	return ml, has
-}
-
-func (s *Sbot) GetIndexNamesSimple() []string {
-	var simple []string
-	for name := range s.simpleIndex {
-		simple = append(simple, name)
-	}
-	return simple
-}
-
-func (s *Sbot) GetIndexNamesMultiLog() []string {
-	var mlogs []string
-	for name := range s.mlogIndicies {
-		mlogs = append(mlogs, name)
-	}
-	return mlogs
-}
 
 var _ ssb.Indexer = (*Sbot)(nil)
 
-func (s *Sbot) indexSyncStart() {
-	s.idxInSync.Add(1)
-	atomic.AddInt64(&s.idxNumSyncing, 1)
+// GetSimpleIndex forwards to the IndexManager.
+func (s *Sbot) GetSimpleIndex(name string) (mindexes.Index[int64], bool) {
+	return s.idxMgr.GetSimpleIndex(name)
 }
 
-func (s *Sbot) indexSyncDone() {
-	atomic.AddInt64(&s.idxNumSyncing, -1)
-	s.idxInSync.Done()
+// GetMultiLog forwards to the IndexManager.
+func (s *Sbot) GetMultiLog(name string) (*roaring.MultiLog, bool) {
+	return s.idxMgr.GetMultiLog(name)
 }
 
-// WaitUntilIndexesAreSynced blocks until all the index processing is in sync with the rootlog
+// GetIndexNamesSimple forwards to the IndexManager.
+func (s *Sbot) GetIndexNamesSimple() []string {
+	return s.idxMgr.GetIndexNamesSimple()
+}
+
+// GetIndexNamesMultiLog forwards to the IndexManager.
+func (s *Sbot) GetIndexNamesMultiLog() []string {
+	return s.idxMgr.GetIndexNamesMultiLog()
+}
+
+// WaitUntilIndexesAreSynced blocks until all the index processing is in sync with the rootlog.
 func (s *Sbot) WaitUntilIndexesAreSynced() {
-	var wg sync.WaitGroup
-
-	// wait for the indexes in parallel so we catch up as quickly as possible
-	wg.Add(2)
-
-	go func() {
-		// wait for our internal indexes (including CombinedIndex which handles user feeds) to catch up
-		s.idxInSync.Wait()
-		wg.Done()
-	}()
-
-	go func() {
-		// wait for all of the graph builder's indexes to catch up
-		s.GraphBuilder.WaitUntilIndexesAreSynced()
-		wg.Done()
-	}()
-
-	// wait for all the concurrent waits to finish
-	wg.Wait()
+	s.idxMgr.WaitUntilIndexesAreSynced()
 }
 
+// AreIndexesSynced returns true when all indexes have caught up.
 func (s *Sbot) AreIndexesSynced() bool {
-	return atomic.LoadInt64(&s.idxNumSyncing) == 0
-}
-
-// serveIndex fills an index with all messages from the receive log.
-func (s *Sbot) serveIndex(name string, idx LogIndexer) {
-	s.serveIndexFrom(name, idx, s.ReceiveLog)
-}
-
-// serveIndexFrom fills an index with messages from a specific log.
-func (s *Sbot) serveIndexFrom(name string, idx LogIndexer, msgs margaret.Log[*multimsg.MultiMessage]) {
-	s.indexSyncStart()
-
-	s.indexStateMu.Lock()
-	s.indexStates[name] = "pending"
-	s.indexStateMu.Unlock()
-
-	s.idxDone.Go(func() (retErr error) {
-		logger := log.With(s.info, "index", name)
-
-		defer func() {
-			if r := recover(); r != nil {
-				retErr = fmt.Errorf("sbot index(%s) panicked: %v", name, r)
-				level.Error(logger).Log("event", "index panic", "err", retErr)
-				s.indexStateMu.Lock()
-				s.indexStates[name] = retErr.Error()
-				s.indexStateMu.Unlock()
-			}
-		}()
-
-		// Process backlog
-		// msgs.Seq() is the last sequence number (0-indexed): N messages → Seq() = N-1.
-		// The index resumes from its checkpoint, so only the remaining messages are processed.
-		// We compute the actual remaining work so the ETA reflects real progress, not the
-		// full log size.
-		logSeq := msgs.Seq() // last seq (0-indexed); total messages = logSeq+1
-		var lastProcessed int64 = -1
-		if lp, ok := idx.(interface{ LastProcessedSeq() int64 }); ok {
-			lastProcessed = lp.LastProcessedSeq()
-		}
-		// remaining = (logSeq) - lastProcessed  (number of messages still to process)
-		// e.g. 1000 messages (seq 0..999), checkpoint at 799 → 200 remaining
-		remaining := logSeq - lastProcessed
-		if remaining < 0 {
-			remaining = 0
-		}
-		var ps progressCounter
-
-		// If the index supports progress callbacks, wire it up
-		if ci, ok := idx.(interface{ SetOnEntry(func()) }); ok {
-			ci.SetOnEntry(func() { ps.Incr() })
-		}
-
-		ctx, cancel := context.WithCancel(s.rootCtx)
-		defer cancel()
-		go func() {
-			p := progress.NewTicker(ctx, &ps, remaining, 7*time.Second)
-			pinfo := log.With(level.Info(logger), "event", "index-progress")
-			for prog := range p {
-				estDone := prog.Estimated()
-				timeLeft := estDone.Sub(time.Now()).Round(time.Second)
-				pinfo.Log("done", prog.Percent(), "time-left", timeLeft)
-
-				s.indexStateMu.Lock()
-				s.indexStates[name] = fmt.Sprintf("%.1f%% (time left:%s)", prog.Percent()*100, timeLeft)
-				s.indexStateMu.Unlock()
-			}
-		}()
-
-		err := idx.Index(msgs)
-		s.indexSyncDone()
-		if errors.Is(err, ssb.ErrShuttingDown) || errors.Is(err, context.Canceled) {
-			return nil
-		}
-		if err != nil {
-			s.indexStateMu.Lock()
-			s.indexStates[name] = err.Error()
-			s.indexStateMu.Unlock()
-			level.Warn(logger).Log("event", "index stopped", "err", err)
-			return fmt.Errorf("sbot index(%s) update of backlog failed: %w", name, err)
-		}
-
-		if !s.liveIndexUpdates {
-			return nil
-		}
-
-		s.indexStateMu.Lock()
-		s.indexStates[name] = "live"
-		s.indexStateMu.Unlock()
-
-		// Live updates: watch for new messages and re-index
-		qry := msgs.Query(margaret.Live(s.rootCtx), margaret.Gt(msgs.Seq()))
-		for range qry.Iter() {
-			s.indexSyncStart()
-			err := idx.Index(msgs)
-			s.indexSyncDone()
-			if err != nil {
-				if errors.Is(err, ssb.ErrShuttingDown) || errors.Is(err, context.Canceled) {
-					return nil
-				}
-				s.indexStateMu.Lock()
-				s.indexStates[name] = err.Error()
-				s.indexStateMu.Unlock()
-				level.Warn(logger).Log("event", "index stopped", "err", err)
-				return fmt.Errorf("sbot index(%s) live update failed: %w", name, err)
-			}
-		}
-		if err := qry.Err(); err != nil {
-			if errors.Is(err, ssb.ErrShuttingDown) || errors.Is(err, context.Canceled) {
-				return nil
-			}
-			return fmt.Errorf("sbot index(%s) live query error: %w", name, err)
-		}
-		return nil
-	})
-}
-
-type progressCounter struct {
-	mu sync.Mutex
-	n  uint
-}
-
-var _ progress.Counter = &progressCounter{}
-
-func (p *progressCounter) N() int64 {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return int64(p.n)
-}
-
-func (p *progressCounter) Incr() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.n++
-}
-
-func (p *progressCounter) Err() error {
-	return nil
+	return s.idxMgr.AreIndexesSynced()
 }
