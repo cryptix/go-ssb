@@ -21,7 +21,6 @@ import (
 	"github.com/dgraph-io/badger/v3"
 	"github.com/go-kit/kit/metrics"
 	"github.com/rs/cors"
-	"github.com/ssbc/go-muxrpc/v3"
 	"github.com/ssbc/go-netwrap"
 	"github.com/ssbc/margaret/v2/multilog"
 	"github.com/ssbc/margaret/v2/multilog/roaring"
@@ -106,8 +105,9 @@ type Sbot struct {
 	preSecureWrappers  []netwrap.ConnWrapper
 	postSecureWrappers []netwrap.ConnWrapper
 
-	public ssb.PluginManager
-	master ssb.PluginManager
+	public        ssb.PluginManager
+	master        ssb.PluginManager
+	inviteService *legacyinvites.Service
 
 	authorizer ssb.Authorizer
 
@@ -577,87 +577,8 @@ func New(fopts ...Option) (*Sbot, error) {
 		return s, nil
 	}
 
-	var inviteService *legacyinvites.Service
-
-	// muxrpc handler creation and authorization decider
-	mkHandler := func(conn net.Conn) (muxrpc.Handler, error) {
-		s.closedMu.Lock()
-		closed := s.closed
-		s.closedMu.Unlock()
-		if closed {
-			return nil, fmt.Errorf("sbot: shutting down, rejecting connection")
-		}
-
-		remote, err := ssb.GetFeedRefFromAddr(conn.RemoteAddr())
-		if err != nil {
-			return nil, fmt.Errorf("sbot: expected an address containing an shs-bs addr: %w", err)
-		}
-
-		// TODO: we still can't see the feed format type from this
-
-		if s.KeyPair.ID().PubKey().Equal(remote.PubKey()) {
-			return s.master.MakeHandler(conn)
-		}
-
-		if inviteService != nil {
-			err := inviteService.Authorize(remote)
-			if err == nil {
-				return inviteService.GuestHandler(), nil
-			}
-		}
-
-		if s.promisc {
-			return s.public.MakeHandler(conn)
-		}
-
-		auth := s.authorizer
-		if auth == nil {
-			auth = s.Replicator.Lister()
-		}
-
-		if s.latency != nil {
-			start := time.Now()
-			defer func() {
-				s.latency.With("part", "graph_auth").Observe(time.Since(start).Seconds())
-			}()
-		}
-		err = auth.Authorize(remote)
-		if err == nil {
-			return s.public.MakeHandler(conn)
-		}
-
-		// we also need to pass the other feed type up the stack...!
-		// TODO: wrap conn with a new remoteAddr
-		ggRemote, err := refs.NewFeedRefFromBytes(remote.PubKey(), refs.RefAlgoFeedGabby)
-		if err == nil {
-			err = auth.Authorize(ggRemote)
-			if err == nil {
-				level.Debug(s.info).Log("TODO", "found gg feed, using that. overhaul shs1 to support more payload in the handshake")
-				return s.public.MakeHandler(conn)
-			}
-		}
-
-		// we also need to pass the other feed type up the stack...!
-		// TODO: wrap conn with a new remoteAddr
-		bbRemote, err := refs.NewFeedRefFromBytes(remote.PubKey(), refs.RefAlgoFeedBendyButt)
-		if err == nil {
-			err = auth.Authorize(bbRemote)
-			if err == nil {
-				level.Debug(s.info).Log("TODO", "found bendy-butt feed, using that. overhaul shs1 to support more payload in the handshake")
-				return s.public.MakeHandler(conn)
-			}
-		}
-
-		// TOFU restore/resync
-		if lst, err := s.Users.List(); err == nil && len(lst) == 0 {
-			level.Warn(s.info).Log("event", "no stored feeds - attempting re-sync with trust-on-first-use")
-			if err := s.Replicate(s.KeyPair.ID()); err != nil {
-				return nil, fmt.Errorf("tofu replicate failed: %w", err)
-			}
-			return s.public.MakeHandler(conn)
-		}
-		return nil, err
-	}
+	// makeHandler is defined in handler_factory.go as a method on Sbot.
+	// inviteService is set later (after network.New) and accessed via s.inviteService.
 
 	// publish
 	authorLog, err := s.Users.Get(storedrefs.Feed(s.KeyPair.ID()))
@@ -853,7 +774,7 @@ func New(fopts ...Option) (*Sbot, error) {
 		AdvertsConnectTo:    s.enableDiscovery,
 		KeyPair:             s.KeyPair,
 		AppKey:              s.appKey[:],
-		MakeHandler:         mkHandler,
+		MakeHandler:         s.makeHandler,
 		ConnTracker:         s.networkConnTracker,
 		BefreCryptoWrappers: s.preSecureWrappers,
 		AfterSecureWrappers: s.postSecureWrappers,
@@ -917,7 +838,7 @@ func New(fopts ...Option) (*Sbot, error) {
 	})
 	networkNode.HandleHTTP(cors.Default().Handler(simpleRouter))
 
-	inviteService, err = legacyinvites.New(
+	s.inviteService, err = legacyinvites.New(
 		log.With(s.info, "unit", "legacyInvites"),
 		storageRepo,
 		s.KeyPair.ID(),
@@ -930,7 +851,7 @@ func New(fopts ...Option) (*Sbot, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sbot: failed to open legacy invites plugin: %w", err)
 	}
-	s.master.Register(inviteService.MasterPlugin())
+	s.master.Register(s.inviteService.MasterPlugin())
 
 	// TODO: should be gossip.connect but conflicts with our namespace assumption
 	s.master.Register(conn.NewPlug(log.With(s.info, "unit", "conn"), networkNode, s))
