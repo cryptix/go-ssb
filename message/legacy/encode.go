@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"sync"
 
 	jsoniter "github.com/json-iterator/go"
 )
@@ -275,24 +276,25 @@ var (
 	}
 )
 
-// init the strings.Joined version of acceptedFieldOrderList for checkFieldOrder()
-// also assert that all values in acceptedFieldOrderList have the same length
-func init() {
+// validateFieldOrderList checks that all entries in acceptedFieldOrderList have the same length.
+// This is a build-time invariant; a mismatch indicates a programming error.
+func validateFieldOrderList() {
 	fieldListLen := -1
 	for i, order := range acceptedFieldOrderList {
-		// length assertion
 		sliceLen := len(order)
 		if i == 0 {
 			fieldListLen = sliceLen
-		} else {
-			if fieldListLen != sliceLen {
-				panic("inconsistent length of acceptedFieldOrderList")
-			}
+		} else if fieldListLen != sliceLen {
+			// This is a compile-time constant; length mismatch is a programming error.
+			panic("inconsistent length of acceptedFieldOrderList")
 		}
 	}
 }
 
+var _validateFieldOrderOnce sync.Once
+
 func checkFieldOrder(fields []string) error {
+	_validateFieldOrderOnce.Do(validateFieldOrderList)
 	for _, acceptedFieldOrder := range acceptedFieldOrderList {
 		if err := fieldOrderIsValid(fields, acceptedFieldOrder); err == nil {
 			return nil

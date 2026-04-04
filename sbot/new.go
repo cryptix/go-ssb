@@ -272,11 +272,14 @@ func New(fopts ...Option) (*Sbot, error) {
 	}
 
 	wantsLog := log.With(s.info, "module", "WantManager")
-	wm := blobstore.NewWantManager(s.BlobStore,
+	wm, err := blobstore.NewWantManager(s.BlobStore,
 		blobstore.WantWithLogger(wantsLog),
 		blobstore.WantWithContext(s.rootCtx),
 		blobstore.WantWithMetrics(s.systemGauge, s.eventCounter),
 	)
+	if err != nil {
+		return nil, fmt.Errorf("sbot: failed to create want manager: %w", err)
+	}
 	s.WantManager = wm
 	s.closers.AddCloser(wm)
 
@@ -838,7 +841,7 @@ func New(fopts ...Option) (*Sbot, error) {
 	s.master.Register(friends.New(s.info, s.KeyPair.ID(), s.GraphBuilder))
 
 	mh := namedPlugin{
-		h:    manifestBlob,
+		h:    getManifest(),
 		name: "manifest"}
 	s.master.Register(mh)
 	s.public.Register(mh)
@@ -994,7 +997,9 @@ func (s *Sbot) ReindexAll() error {
 	}
 
 	// Reset the combined index state and re-index
-	s.combIdx.ResetState()
+	if err := s.combIdx.ResetState(); err != nil {
+		return err
+	}
 	return s.combIdx.Index(s.ReceiveLog)
 }
 
@@ -1062,6 +1067,9 @@ func (s *Sbot) Close() error {
 	if s.combIdx != nil {
 		if err := s.combIdx.FlushAndSave(); err != nil {
 			level.Warn(closeEvt).Log("msg", "combined index flush failed", "err", err)
+			if s.closeErr == nil {
+				s.closeErr = fmt.Errorf("sbot: combined index flush failed: %w", err)
+			}
 		}
 	}
 

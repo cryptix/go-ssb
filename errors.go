@@ -23,34 +23,45 @@ func (e ErrOutOfReach) Error() string {
 	return fmt.Sprintf("ssb/graph: peer not in reach. d:%d, max:%d", e.Dist, e.Max)
 }
 
+// IsMessageUnusable returns true if the error indicates the message
+// cannot be processed (wrong type, malformed, or invalid JSON).
 func IsMessageUnusable(err error) bool {
-	if errors.Is(err, ErrWrongType{}) {
+	var ewt ErrWrongType
+	if errors.As(err, &ewt) {
 		return true
 	}
 
-	if errors.Is(err, ErrMalfromedMsg{}) {
+	var emm ErrMalformedMsg
+	if errors.As(err, &emm) {
 		return true
 	}
 
-	if errors.Is(err, &json.SyntaxError{}) {
+	var se *json.SyntaxError
+	if errors.As(err, &se) {
 		return true
 	}
 
 	return false
 }
 
-type ErrMalfromedMsg struct {
+// ErrMalformedMsg indicates a message that could not be parsed.
+type ErrMalformedMsg struct {
 	reason string
 	m      map[string]interface{}
 }
 
-func (emm ErrMalfromedMsg) Error() string {
-	s := "ErrMalfromedMsg: " + emm.reason
+func (emm ErrMalformedMsg) Error() string {
+	s := "ErrMalformedMsg: " + emm.reason
 	if emm.m != nil {
 		s += fmt.Sprintf(" %+v", emm.m)
 	}
 	return s
 }
+
+// ErrMalfromedMsg is a deprecated alias for ErrMalformedMsg.
+//
+// Deprecated: Use ErrMalformedMsg instead.
+type ErrMalfromedMsg = ErrMalformedMsg
 
 type ErrWrongType struct {
 	has, want string
@@ -60,7 +71,13 @@ func (ewt ErrWrongType) Error() string {
 	return fmt.Sprintf("ErrWrongType: want: %s has: %s", ewt.want, ewt.has)
 }
 
-var ErrUnuspportedFormat = fmt.Errorf("ssb: unsupported format")
+// ErrUnsupportedFormat indicates an unsupported message format.
+var ErrUnsupportedFormat = fmt.Errorf("ssb: unsupported format")
+
+// ErrUnuspportedFormat is a deprecated alias for ErrUnsupportedFormat.
+//
+// Deprecated: Use ErrUnsupportedFormat instead.
+var ErrUnuspportedFormat = ErrUnsupportedFormat
 
 // ErrWrongSequence is returned if there is a glitch on the current
 // sequence number on the feed between in the offsetlog and the logical entry on the feed

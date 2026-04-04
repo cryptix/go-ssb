@@ -28,7 +28,7 @@ import (
 // seq is in the same base ase the feed (starting with 1).
 func (s *Sbot) NullContent(fr refs.FeedRef, seq uint) error {
 	if fr.Algo() != refs.RefAlgoFeedGabby {
-		return ssb.ErrUnuspportedFormat
+		return ssb.ErrUnsupportedFormat
 	}
 
 	uf, ok := s.GetMultiLog(multilogs.IndexNameFeeds)

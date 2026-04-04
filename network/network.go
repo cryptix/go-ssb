@@ -8,23 +8,30 @@ package network
 import (
 	"fmt"
 	"net"
+	"sync"
 )
 
-var privateIPBlocks []*net.IPNet
+var (
+	privateIPBlocks     []*net.IPNet
+	privateIPBlocksOnce sync.Once
+)
 
-func init() {
-	for _, cidr := range []string{
-		"127.0.0.0/8",    // IPv4 loopback
-		"10.0.0.0/8",     // RFC1918
-		"172.16.0.0/12",  // RFC1918
-		"192.168.0.0/16", // RFC1918
-		"::1/128",        // IPv6 loopback
-		"fe80::/10",      // IPv6 link-local
-		"fc00::/7",       // IPv6 unique local addr
-	} {
-		_, block, _ := net.ParseCIDR(cidr)
-		privateIPBlocks = append(privateIPBlocks, block)
-	}
+func loadPrivateIPBlocks() []*net.IPNet {
+	privateIPBlocksOnce.Do(func() {
+		for _, cidr := range []string{
+			"127.0.0.0/8",    // IPv4 loopback
+			"10.0.0.0/8",     // RFC1918
+			"172.16.0.0/12",  // RFC1918
+			"192.168.0.0/16", // RFC1918
+			"::1/128",        // IPv6 loopback
+			"fe80::/10",      // IPv6 link-local
+			"fc00::/7",       // IPv6 unique local addr
+		} {
+			_, block, _ := net.ParseCIDR(cidr)
+			privateIPBlocks = append(privateIPBlocks, block)
+		}
+	})
+	return privateIPBlocks
 }
 
 func isIPv4(ip net.IP) bool {
@@ -99,7 +106,7 @@ func isNetworkAddressSiteLocal(addr net.Addr) (bool, error) {
 	}
 
 	var found bool
-	for _, block := range privateIPBlocks {
+	for _, block := range loadPrivateIPBlocks() {
 		if block.Contains(ipAddr) {
 			found = true
 			break
