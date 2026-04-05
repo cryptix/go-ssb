@@ -155,9 +155,8 @@ func TestPrivateGroupsManualDecrypt(t *testing.T) {
 	r.NoError(err)
 
 	// wait until replication completes
-	testutils.RequireEventually(t, func() bool {
-		return srhsCopyOfTal.Seq() >= 1 && talsCopyOfSrh.Seq() >= 5
-	}, 10*time.Second, "replication did not complete")
+	testutils.WaitForSeq(t, talsCopyOfSrh, 5, 10*time.Second, "tal did not replicate srh's messages")
+	testutils.WaitForSeq(t, srhsCopyOfTal, 1, 10*time.Second, "srh did not replicate tal's messages")
 
 	// did we get the expected number of messages?
 	r.EqualValues(1, srhsCopyOfTal.Seq())
@@ -199,9 +198,7 @@ func TestPrivateGroupsManualDecrypt(t *testing.T) {
 	err = srh.Network.Connect(ctx, tal.Network.GetListenAddr())
 	r.NoError(err)
 	// wait for reply to replicate
-	testutils.RequireEventually(t, func() bool {
-		return srhsCopyOfTal.Seq() >= 2
-	}, 10*time.Second, "reply did not replicate")
+	testutils.WaitForSeq(t, srhsCopyOfTal, 2, 10*time.Second, "reply did not replicate")
 
 	r.EqualValues(2, srhsCopyOfTal.Seq())
 
@@ -401,9 +398,7 @@ func XTestGroupsReindex(t *testing.T) {
 
 	srhsCopyOfTalUsers, err := srh.Users.Get(storedrefs.Feed(tal.KeyPair.ID()))
 	r.NoError(err)
-	testutils.RequireEventually(t, func() bool {
-		return srhsCopyOfTalUsers.Seq() >= 10
-	}, 10*time.Second, "srh did not replicate tal's messages")
+	testutils.WaitForSeq(t, srhsCopyOfTalUsers, 10, 10*time.Second, "srh did not replicate tal's messages")
 
 	chkCount(srh.Users)(storedrefs.Feed(tal.KeyPair.ID()), 11)
 
@@ -447,9 +442,7 @@ func XTestGroupsReindex(t *testing.T) {
 	err = raz.Network.Connect(ctx, tal.Network.GetListenAddr())
 	r.NoError(err)
 
-	testutils.RequireEventually(t, func() bool {
-		return talsLog.Seq() >= 10
-	}, 30*time.Second, "raz did not replicate all of tal's messages")
+	testutils.WaitForSeq(t, talsLog, 10, 30*time.Second, "raz did not replicate all of tal's messages")
 
 	chkCount(srh.Users)(storedrefs.Feed(tal.KeyPair.ID()), 11)
 	chkCount(raz.Users)(storedrefs.Feed(tal.KeyPair.ID()), 11)

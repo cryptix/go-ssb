@@ -114,9 +114,7 @@ func TestFeedsGabbySync(t *testing.T) {
 	r.NoError(err)
 
 	// wait until ali has replicated all of bob's messages
-	testutils.RequireEventually(t, func() bool {
-		return bosLogAtAli.Seq() >= int64(9)
-	}, 10*time.Second, "ali did not replicate bob's 10 messages")
+	testutils.WaitForSeq(t, bosLogAtAli, int64(9), 10*time.Second, "ali did not replicate bob's 10 messages")
 
 	ali.Network.GetConnTracker().CloseAll()
 	r.Equal(int64(9), bosLogAtAli.Seq())

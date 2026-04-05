@@ -95,14 +95,9 @@ func TestPersistence(t *testing.T) {
 
 	// wait for replication to complete across all bots
 	expectedSeq := int64(testMsgCount*len(theBots) - 1)
-	testutils.RequireEventually(t, func() bool {
-		for _, bot := range theBots {
-			if bot.ReceiveLog.Seq() < expectedSeq {
-				return false
-			}
-		}
-		return true
-	}, 15*time.Second, "replication did not complete across chain")
+	for i, bot := range theBots {
+		testutils.WaitForReceiveLogSeq(t, bot.ReceiveLog, expectedSeq, 15*time.Second, fmt.Sprintf("bot %d did not replicate", i))
+	}
 
 	cancel()
 	for _, bot := range theBots {

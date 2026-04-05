@@ -303,9 +303,7 @@ func TestFeedsLiveSimpleTwo(t *testing.T) {
 	r.NoError(err)
 
 	// wait for ali's contact message to replicate to bob
-	testutils.RequireEventually(t, func() bool {
-		return alisLog.Seq() >= 0
-	}, 10*time.Second, "ali's initial message did not replicate")
+	testutils.WaitForSeq(t, alisLog, 0, 10*time.Second, "ali's initial message did not replicate")
 
 	wantSeq := int64(0)
 	a.Equal(wantSeq, alisLog.Seq(), "after connect check")
@@ -506,14 +504,9 @@ func initialSync(t testing.TB, theBots []*Sbot, expectedMsgCount int) {
 	}
 
 	// wait until all bots have replicated all messages
-	testutils.RequireEventually(t, func() bool {
-		for _, bot := range theBots {
-			if int(bot.ReceiveLog.Seq()) < expectedMsgCount-1 {
-				return false
-			}
-		}
-		return true
-	}, 30*time.Second, "initial sync did not complete")
+	for i, bot := range theBots {
+		testutils.WaitForReceiveLogSeq(t, bot.ReceiveLog, int64(expectedMsgCount-1), 30*time.Second, fmt.Sprintf("bot %d did not complete initial sync", i))
+	}
 
 	t.Log("initsync done")
 

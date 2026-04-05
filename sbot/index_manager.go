@@ -40,7 +40,8 @@ type IndexManager struct {
 	receiveLog margaret.Log[*multimsg.MultiMessage]
 
 	idxDone       errgroup.Group
-	idxInSync     sync.WaitGroup
+	idxSyncMu     sync.Mutex
+	idxSyncCond   *sync.Cond
 	idxNumSyncing int64
 
 	liveIndexUpdates bool
@@ -61,7 +62,7 @@ func NewIndexManager(
 	receiveLog margaret.Log[*multimsg.MultiMessage],
 	liveIndexUpdates bool,
 ) *IndexManager {
-	return &IndexManager{
+	im := &IndexManager{
 		info:             logger,
 		rootCtx:          rootCtx,
 		receiveLog:       receiveLog,
@@ -70,6 +71,8 @@ func NewIndexManager(
 		mlogIndicies:     make(map[string]*roaring.MultiLog),
 		simpleIndex:      make(map[string]mindexes.Index[int64]),
 	}
+	im.idxSyncCond = sync.NewCond(&im.idxSyncMu)
+	return im
 }
 
 // SetGraphSyncer sets the graph builder dependency used by WaitUntilIndexesAreSynced
@@ -120,24 +123,15 @@ func (im *IndexManager) GetIndexNamesMultiLog() []string {
 
 // WaitUntilIndexesAreSynced blocks until all index processing is in sync with the rootlog.
 func (im *IndexManager) WaitUntilIndexesAreSynced() {
-	var wg sync.WaitGroup
-
-	// wait for the indexes in parallel so we catch up as quickly as possible
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		im.idxInSync.Wait()
-	}()
+	im.idxSyncMu.Lock()
+	for atomic.LoadInt64(&im.idxNumSyncing) > 0 {
+		im.idxSyncCond.Wait()
+	}
+	im.idxSyncMu.Unlock()
 
 	if im.graphSyncer != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			im.graphSyncer.WaitUntilIndexesAreSynced()
-		}()
+		im.graphSyncer.WaitUntilIndexesAreSynced()
 	}
-
-	wg.Wait()
 }
 
 // AreIndexesSynced returns true if all indexes have caught up with the rootlog.
@@ -162,13 +156,13 @@ func (im *IndexManager) Wait() error {
 }
 
 func (im *IndexManager) syncStart() {
-	im.idxInSync.Add(1)
 	atomic.AddInt64(&im.idxNumSyncing, 1)
 }
 
 func (im *IndexManager) syncDone() {
-	atomic.AddInt64(&im.idxNumSyncing, -1)
-	im.idxInSync.Done()
+	if atomic.AddInt64(&im.idxNumSyncing, -1) == 0 {
+		im.idxSyncCond.Broadcast()
+	}
 }
 
 // ServeIndex fills an index with all messages from the receive log.

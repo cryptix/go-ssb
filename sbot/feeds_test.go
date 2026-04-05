@@ -181,9 +181,7 @@ func createFeedsOneByOneTest(mode replicationMode) func(t *testing.T) {
 			err = bob.Network.Connect(ctx, ali.Network.GetListenAddr())
 			r.NoError(err)
 			// Wait until bob has replicated ali's message
-			testutils.RequireEventually(t, func() bool {
-				return alisLog.Seq() >= int64(i)
-			}, 10*time.Second, "bob did not replicate ali@%d", i)
+			testutils.WaitForSeq(t, alisLog, int64(i), 10*time.Second, "bob did not replicate ali@%d", i)
 			bob.Network.GetConnTracker().CloseAll()
 
 			// check the note is updated correctly

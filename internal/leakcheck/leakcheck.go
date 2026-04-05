@@ -46,6 +46,9 @@ var goroutinesToIgnore = []string{
 	"runtime_mcall",
 	"(*loggingT).flushDaemon",
 	"goroutine in C code",
+	"bleve_index_api.AnalysisWorker",
+	"dgraph-io/badger",
+	"dgraph-io/ristretto",
 }
 
 // RegisterIgnoreGoroutine appends s into the ignore goroutine list. The
