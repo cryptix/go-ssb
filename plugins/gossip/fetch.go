@@ -184,14 +184,9 @@ func (h *LegacyGossip) fetchFeed(
 		copy(raw, b)
 		batch = append(batch, raw)
 		if len(batch) >= fetchBatchSize {
-			verified, verifyErr := snk.VerifyBatch(batch)
+			verified, verifyErr := snk.VerifyAndSaveBatch(batch)
 			if verifyErr != nil {
 				return verifyErr
-			}
-			if len(verified) > 0 {
-				if _, saveErr := h.verifyRouter.SaveBatch(verified); saveErr != nil {
-					return saveErr
-				}
 			}
 			latestSeq += len(verified)
 			batch = batch[:0]
@@ -199,14 +194,9 @@ func (h *LegacyGossip) fetchFeed(
 	}
 	// flush remainder
 	if len(batch) > 0 {
-		verified, verifyErr := snk.VerifyBatch(batch)
+		verified, verifyErr := snk.VerifyAndSaveBatch(batch)
 		if verifyErr != nil {
 			return verifyErr
-		}
-		if len(verified) > 0 {
-			if _, saveErr := h.verifyRouter.SaveBatch(verified); saveErr != nil {
-				return saveErr
-			}
 		}
 		latestSeq += len(verified)
 	}

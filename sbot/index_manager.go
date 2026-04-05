@@ -161,7 +161,12 @@ func (im *IndexManager) syncStart() {
 
 func (im *IndexManager) syncDone() {
 	if atomic.AddInt64(&im.idxNumSyncing, -1) == 0 {
+		// Lock the mutex before broadcasting to prevent a lost wakeup where
+		// WaitUntilIndexesAreSynced reads counter > 0, then we broadcast
+		// before it calls Wait(), causing it to block indefinitely.
+		im.idxSyncMu.Lock()
 		im.idxSyncCond.Broadcast()
+		im.idxSyncMu.Unlock()
 	}
 }
 

@@ -282,13 +282,9 @@ func (h *MUXRPCHandler) Loop(ctx context.Context, tx *muxrpc.ByteSink, rx *muxrp
 				raws[j] = pending[idx].raw
 			}
 
-			verified, verifyErr := vsnk.VerifyBatch(raws)
+			verified, verifyErr := vsnk.VerifyAndSaveBatch(raws)
 			if len(verified) > 0 {
 				totalVerified += len(verified)
-				if _, saveErr := h.verify.SaveBatch(verified); saveErr != nil {
-					h.check(saveErr)
-					continue
-				}
 
 				// Collect EBT state updates for the ACK.
 				lastMsg := verified[len(verified)-1]

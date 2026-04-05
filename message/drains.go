@@ -29,6 +29,11 @@ type SequencedVerificationSink interface {
 	// It does NOT save — the caller is responsible for bulk saving.
 	// Returns verified messages up to the first error (feeds are sequential).
 	VerifyBatch(msgs [][]byte) ([]refs.Message, error)
+
+	// VerifyAndSaveBatch verifies and saves a batch of messages atomically
+	// under a single lock acquisition. This prevents out-of-order saves when
+	// multiple concurrent replication sessions process the same feed.
+	VerifyAndSaveBatch(msgs [][]byte) ([]refs.Message, error)
 }
 
 // ForkHandler is called when a fork is detected during verification.
@@ -236,6 +241,56 @@ func (ld *generalVerifyDrain) VerifyBatch(msgs [][]byte) ([]refs.Message, error)
 		ld.latestMsg = next
 		verified = append(verified, next)
 	}
+	return verified, nil
+}
+
+// VerifyAndSaveBatch verifies and saves a batch of raw messages atomically
+// under a single lock acquisition. This ensures that when multiple concurrent
+// replication sessions process the same feed, messages are saved to the rxlog
+// in the same order they were verified, preventing out-of-order sequence errors.
+func (ld *generalVerifyDrain) VerifyAndSaveBatch(msgs [][]byte) ([]refs.Message, error) {
+	ld.mu.Lock()
+	defer ld.mu.Unlock()
+
+	verified := make([]refs.Message, 0, len(msgs))
+	for _, raw := range msgs {
+		next, err := ld.verify.Verify(raw)
+		if err != nil {
+			return verified, fmt.Errorf("message(%s:%d) verify failed: %w", ld.who.ShortSigil(), ld.latestSeq, err)
+		}
+
+		err = ValidateNext(ld.latestMsg, next)
+		if err != nil {
+			if err == errSkip {
+				continue
+			}
+			var forkErr *ErrForkDetected
+			if errors.As(err, &forkErr) && ld.forkHandler != nil {
+				ld.forkHandler(forkErr.Existing, forkErr.Incoming)
+			}
+			return verified, err
+		}
+
+		ld.latestSeq = int64(next.Seq())
+		ld.latestMsg = next
+		verified = append(verified, next)
+	}
+
+	// Save under the same lock to prevent out-of-order appends to the rxlog.
+	if len(verified) > 0 {
+		if batcher, ok := ld.storage.(BatchSaveMessager); ok {
+			if _, err := batcher.SaveBatch(verified); err != nil {
+				return verified, fmt.Errorf("message(%s): batch save failed: %w", ld.who.ShortSigil(), err)
+			}
+		} else {
+			for _, msg := range verified {
+				if err := ld.storage.Save(msg); err != nil {
+					return verified, fmt.Errorf("message(%s): failed to append message(%s:%d): %w", ld.who.ShortSigil(), msg.Key().String(), msg.Seq(), err)
+				}
+			}
+		}
+	}
+
 	return verified, nil
 }
 
