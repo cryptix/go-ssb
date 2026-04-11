@@ -103,11 +103,17 @@ func TestSearchIndex(t *testing.T) {
 	r.NoError(err, "explicit search re-index failed")
 
 	// set up the subset planer with search
-	sp := query.NewSubsetPlanerFull(
-		mainbot.Users, mainbot.ByType, mainbot.Tangles,
-		mainbot.Channels, mainbot.Mentions,
-		mainbot.ReceiveLog, mainbot.GraphBuilder, mainbot.SeqResolver,
-	).WithSearch(mainbot.SearchIndex)
+	sp := query.NewSubsetPlaner(query.SubsetPlanerOptions{
+		Authors:     mainbot.Users,
+		ByType:      mainbot.ByType,
+		Tangles:     mainbot.Tangles,
+		Channels:    mainbot.Channels,
+		Mentions:    mainbot.Mentions,
+		RxLog:       mainbot.ReceiveLog,
+		Graph:       mainbot.GraphBuilder,
+		SeqResolver: mainbot.SeqResolver,
+		Search:      mainbot.SearchIndex,
+	})
 
 	t.Run("search returns matching posts", func(t *testing.T) {
 		r := require.New(t)
@@ -238,11 +244,16 @@ func TestSearchIndexDisabled(t *testing.T) {
 	r.Nil(mainbot.SearchIndex, "search index should be nil when EnableSearch is not used")
 
 	// set up subset planer without search -- querying search should fail gracefully
-	sp := query.NewSubsetPlanerFull(
-		mainbot.Users, mainbot.ByType, mainbot.Tangles,
-		mainbot.Channels, mainbot.Mentions,
-		mainbot.ReceiveLog, mainbot.GraphBuilder, mainbot.SeqResolver,
-	)
+	sp := query.NewSubsetPlaner(query.SubsetPlanerOptions{
+		Authors:     mainbot.Users,
+		ByType:      mainbot.ByType,
+		Tangles:     mainbot.Tangles,
+		Channels:    mainbot.Channels,
+		Mentions:    mainbot.Mentions,
+		RxLog:       mainbot.ReceiveLog,
+		Graph:       mainbot.GraphBuilder,
+		SeqResolver: mainbot.SeqResolver,
+	})
 
 	qry := query.NewSubsetOpBySearch("anything")
 	_, err = sp.QuerySubsetBitmap(context.Background(), qry)
