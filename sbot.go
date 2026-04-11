@@ -22,6 +22,13 @@ type Publisher interface {
 
 	// Publish is a utility wrapper around append which returns the new message reference key
 	Publish(content interface{}) (refs.Message, error)
+
+	// LastMsg returns the most recently published message for this feed,
+	// using the same in-memory cache that Publish consults. Returns (nil, nil)
+	// if nothing has been published yet on this feed. Callers that need the
+	// previous message ref should prefer this over Seq()+Get() because it
+	// avoids a race with the async byAuthor index.
+	LastMsg() (refs.Message, error)
 }
 
 type Getter interface {

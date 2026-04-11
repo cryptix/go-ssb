@@ -10,20 +10,15 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"os"
 	"os/user"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/dgraph-io/badger/v3"
 	"github.com/go-kit/kit/metrics"
-	"github.com/rs/cors"
-	"github.com/ssbc/go-muxrpc/v3"
 	"github.com/ssbc/go-netwrap"
-	mindexes "github.com/ssbc/margaret/v2/indexes"
 	"github.com/ssbc/margaret/v2/multilog"
 	"github.com/ssbc/margaret/v2/multilog/roaring"
 	multibbolt "github.com/ssbc/margaret/v2/multilog/roaring/bbolt"
@@ -31,7 +26,6 @@ import (
 	bolt "go.etcd.io/bbolt"
 	"go.mindeco.de/log"
 	"go.mindeco.de/log/level"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/ssbc/go-ssb"
 	refs "github.com/ssbc/go-ssb-refs"
@@ -41,31 +35,16 @@ import (
 	"github.com/ssbc/go-ssb/internal/multicloser"
 	"github.com/ssbc/go-ssb/internal/mutil"
 	"github.com/ssbc/go-ssb/internal/statematrix"
-	"github.com/ssbc/go-ssb/internal/storedrefs"
 	"github.com/ssbc/go-ssb/message"
 	"github.com/ssbc/go-ssb/message/multimsg"
 	"github.com/ssbc/go-ssb/multilogs"
 	"github.com/ssbc/go-ssb/network"
-	"github.com/ssbc/go-ssb/plugins/blobs"
-	"github.com/ssbc/go-ssb/plugins/conn"
 	"github.com/ssbc/go-ssb/plugins/ebt"
-	"github.com/ssbc/go-ssb/plugins/friends"
-	"github.com/ssbc/go-ssb/plugins/get"
 	"github.com/ssbc/go-ssb/plugins/gossip"
-	"github.com/ssbc/go-ssb/plugins/groups"
 	"github.com/ssbc/go-ssb/plugins/legacyinvites"
-	"github.com/ssbc/go-ssb/plugins/partial"
-	privplug "github.com/ssbc/go-ssb/plugins/private"
-	"github.com/ssbc/go-ssb/plugins/publish"
-	"github.com/ssbc/go-ssb/plugins/rawread"
-	"github.com/ssbc/go-ssb/plugins/replicate"
-	"github.com/ssbc/go-ssb/plugins/status"
-	"github.com/ssbc/go-ssb/plugins/tangles"
-	"github.com/ssbc/go-ssb/plugins/whoami"
 	"github.com/ssbc/go-ssb/plugins2/names"
 	"github.com/ssbc/go-ssb/private"
 	"github.com/ssbc/go-ssb/private/keys"
-	"github.com/ssbc/go-ssb/query"
 	"github.com/ssbc/go-ssb/repo"
 )
 
@@ -81,13 +60,11 @@ type Sbot struct {
 
 	rootCtx context.Context
 	// Shutdown needs to be called to shutdown indexing
-	Shutdown      context.CancelFunc
-	closers       multicloser.MultiCloser
-	combIdx       *multilogs.CombinedIndex
-	feedManager   *gossip.FeedManager
-	idxDone       errgroup.Group
-	idxInSync     sync.WaitGroup
-	idxNumSyncing int64
+	Shutdown    context.CancelFunc
+	closers     multicloser.MultiCloser
+	combIdx     *multilogs.CombinedIndex
+	feedManager *gossip.FeedManager
+	idxMgr      *IndexManager
 
 	closed   bool
 	closedMu sync.Mutex
@@ -111,8 +88,9 @@ type Sbot struct {
 	preSecureWrappers  []netwrap.ConnWrapper
 	postSecureWrappers []netwrap.ConnWrapper
 
-	public ssb.PluginManager
-	master ssb.PluginManager
+	public        ssb.PluginManager
+	master        ssb.PluginManager
+	inviteService *legacyinvites.Service
 
 	authorizer ssb.Authorizer
 
@@ -150,14 +128,8 @@ type Sbot struct {
 	indexStore *badger.DB
 	boltDB     *bolt.DB
 
-	// plugin indexes
-	mlogIndicies map[string]*roaring.MultiLog
-	simpleIndex  map[string]mindexes.Index[int64]
-
 	liveIndexUpdates     bool
 	skipConsistencyCheck bool
-	indexStateMu         sync.Mutex
-	indexStates          map[string]string
 
 	ebtState   *statematrix.StateMatrix
 	ebtHandler *ebt.MUXRPCHandler
@@ -182,6 +154,7 @@ type Sbot struct {
 	IndexFeeds      ssb.IndexFeedManager
 
 	ssb.Replicator
+	graphRepl *graphReplicator // tracked for clean shutdown
 }
 
 // New creates an sbot instance using the passed options to configure it.
@@ -191,10 +164,6 @@ func New(fopts ...Option) (*Sbot, error) {
 
 	s.public = ssb.NewPluginManager()
 	s.master = ssb.NewPluginManager()
-
-	s.mlogIndicies = make(map[string]*roaring.MultiLog)
-	s.simpleIndex = make(map[string]mindexes.Index[int64])
-	s.indexStates = make(map[string]string)
 
 	s.disableLegacyLiveReplication = true
 
@@ -262,6 +231,8 @@ func New(fopts ...Option) (*Sbot, error) {
 	}
 	s.closers.AddCloser(s.ReceiveLog.(io.Closer))
 
+	s.idxMgr = NewIndexManager(s.info, s.rootCtx, s.ReceiveLog, s.liveIndexUpdates)
+
 	// if not configured
 	if s.BlobStore == nil {
 		// load default, local file blob store
@@ -272,11 +243,14 @@ func New(fopts ...Option) (*Sbot, error) {
 	}
 
 	wantsLog := log.With(s.info, "module", "WantManager")
-	wm := blobstore.NewWantManager(s.BlobStore,
+	wm, err := blobstore.NewWantManager(s.BlobStore,
 		blobstore.WantWithLogger(wantsLog),
 		blobstore.WantWithContext(s.rootCtx),
 		blobstore.WantWithMetrics(s.systemGauge, s.eventCounter),
 	)
+	if err != nil {
+		return nil, fmt.Errorf("sbot: failed to create want manager: %w", err)
+	}
 	s.WantManager = wm
 	s.closers.AddCloser(wm)
 
@@ -304,12 +278,13 @@ func New(fopts ...Option) (*Sbot, error) {
 	}
 	idxTimestamps := indexes.NewTimestampSorter(s.SeqResolver)
 	s.closers.AddCloser(idxTimestamps)
-	s.serveIndex("timestamps", idxTimestamps)
+	s.idxMgr.ServeIndex("timestamps", idxTimestamps)
 
 	s.indexStore, err = repo.OpenBadgerDB(storageRepo.GetPath(repo.PrefixMultiLog, "shared-badger"))
 	if err != nil {
 		return nil, err
 	}
+	s.closers.AddCloser(s.indexStore)
 
 	boltPath := storageRepo.GetPath(repo.PrefixIndex, "bolt.db")
 	os.MkdirAll(filepath.Dir(boltPath), 0700)
@@ -317,6 +292,7 @@ func New(fopts ...Option) (*Sbot, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sbot: failed to open bolt db: %w", err)
 	}
+	s.closers.AddCloser(s.boltDB)
 
 	// Dense multilogs — backed by filesystem (few sublogs, large bitmaps).
 	var denseMlogs = []struct {
@@ -331,7 +307,7 @@ func New(fopts ...Option) (*Sbot, error) {
 	for _, index := range denseMlogs {
 		mlog := multifs.NewMultiLog(storageRepo.GetPath(repo.PrefixMultiLog, index.Name))
 		s.closers.AddCloser(mlog)
-		s.mlogIndicies[index.Name] = mlog
+		s.idxMgr.RegisterMultiLog(index.Name, mlog)
 		*index.Mlog = mlog
 	}
 
@@ -352,7 +328,7 @@ func New(fopts ...Option) (*Sbot, error) {
 			return nil, fmt.Errorf("sbot: failed to open bbolt multilog %s: %w", index.Name, err)
 		}
 		s.closers.AddCloser(mlog)
-		s.mlogIndicies[index.Name] = mlog
+		s.idxMgr.RegisterMultiLog(index.Name, mlog)
 		*index.Mlog = mlog
 	}
 
@@ -371,8 +347,8 @@ func New(fopts ...Option) (*Sbot, error) {
 
 	// get(msgRef) -> rxLog sequence index
 	getIdx, getIdxSink := indexes.OpenGet(s.indexStore)
-	s.serveIndex("get", getIdxSink)
-	s.simpleIndex["get"] = getIdx
+	s.idxMgr.ServeIndex("get", getIdxSink)
+	s.idxMgr.RegisterSimpleIndex("get", getIdx)
 
 	// groups2
 	keysStore := keys.NewStore(s.indexStore, []byte("group-and-signing"))
@@ -417,7 +393,7 @@ func New(fopts ...Option) (*Sbot, error) {
 	}
 
 	s.combIdx = combIdx
-	s.serveIndex("combined", combIdx)
+	s.idxMgr.ServeIndex("combined", combIdx)
 	s.closers.AddCloser(combIdx)
 
 	// full-text search index (optional)
@@ -427,7 +403,7 @@ func New(fopts ...Option) (*Sbot, error) {
 			return nil, fmt.Errorf("sbot: failed to open search index: %w", err)
 		}
 		s.SearchIndex = searchIdx
-		s.serveIndex("search", searchIdx)
+		s.idxMgr.ServeIndex("search", searchIdx)
 		s.closers.AddCloser(searchIdx)
 	}
 
@@ -448,7 +424,7 @@ func New(fopts ...Option) (*Sbot, error) {
 	}
 	justAddMemberMsgs := mutil.Indirect(s.ReceiveLog, addMemberSeqs)
 
-	s.serveIndexFrom("group-members", members, justAddMemberMsgs)
+	s.idxMgr.ServeIndexFrom("group-members", members, justAddMemberMsgs)
 
 	/* TODO: fix deadlock in index update locking
 	if _, ok := s.simpleIndex["content-delete-requests"]; !ok {
@@ -478,8 +454,9 @@ func New(fopts ...Option) (*Sbot, error) {
 	justContacts := mutil.Indirect(s.ReceiveLog, contactLog)
 
 	// fill the index
-	s.serveIndexFrom("contacts", contactsIdx, justContacts)
+	s.idxMgr.ServeIndexFrom("contacts", contactsIdx, justContacts)
 	s.GraphBuilder = gb
+	s.idxMgr.SetGraphSyncer(gb)
 
 	// abouts
 
@@ -492,19 +469,19 @@ func New(fopts ...Option) (*Sbot, error) {
 
 	var namesPlug names.Plugin
 	aboutIdx := namesPlug.OpenSharedIndex(s.indexStore)
-	s.serveIndexFrom("abouts", aboutIdx, aboutsOnly)
+	s.idxMgr.ServeIndexFrom("abouts", aboutIdx, aboutsOnly)
 
-	// need to close s.indexStore and boltDB _after_ the all the indexes closed and flushed
-	s.closers.AddCloser(s.indexStore)
-	s.closers.AddCloser(s.boltDB)
+	// indexStore and boltDB are registered in closers immediately after opening (above).
+	// Since MultiCloser closes in LIFO order, they will be closed after all indexes.
 
 	// which feeds to replicate (only needed when networking is enabled)
 	if !s.disableNetwork {
 		if s.Replicator == nil {
-			s.Replicator, err = s.newGraphReplicator()
+			s.graphRepl, err = s.newGraphReplicator()
 			if err != nil {
 				return nil, err
 			}
+			s.Replicator = s.graphRepl
 		}
 
 		// load our network frontier
@@ -565,7 +542,7 @@ func New(fopts ...Option) (*Sbot, error) {
 		justMetafeedMessages := repo.NewFilteredLog(s.ReceiveLog, graph.IsMetafeedMessage)
 
 		mfIdx := gb.OpenMetafeedsIndex()
-		s.serveIndexFrom("metafeed", mfIdx, justMetafeedMessages)
+		s.idxMgr.ServeIndexFrom("metafeed", mfIdx, justMetafeedMessages)
 
 		// 2) metafeed/announce on normal format
 		byTypeAnnouncementSeqs, err := s.ByType.Get(multilog.Addr("string:metafeed/announce"))
@@ -577,7 +554,7 @@ func New(fopts ...Option) (*Sbot, error) {
 		byTypeAnnouncements := mutil.Indirect(s.ReceiveLog, byTypeAnnouncementSeqs)
 
 		announcementIdx := gb.OpenAnnouncementIndex()
-		s.serveIndexFrom("metafeed announcements", announcementIdx, byTypeAnnouncements)
+		s.idxMgr.ServeIndexFrom("metafeed announcements", announcementIdx, byTypeAnnouncements)
 	}
 
 	// from here on just network related stuff
@@ -585,364 +562,10 @@ func New(fopts ...Option) (*Sbot, error) {
 		return s, nil
 	}
 
-	var inviteService *legacyinvites.Service
-
-	// muxrpc handler creation and authoratization decider
-	mkHandler := func(conn net.Conn) (muxrpc.Handler, error) {
-		// bypassing badger-close bug to go through with an accept (or not) before closing the bot
-		s.closedMu.Lock()
-		defer s.closedMu.Unlock()
-
-		remote, err := ssb.GetFeedRefFromAddr(conn.RemoteAddr())
-		if err != nil {
-			return nil, fmt.Errorf("sbot: expected an address containing an shs-bs addr: %w", err)
-		}
-
-		// TODO: we still can't see the feed format type from this
-
-		if s.KeyPair.ID().PubKey().Equal(remote.PubKey()) {
-			return s.master.MakeHandler(conn)
-		}
-
-		if inviteService != nil {
-			err := inviteService.Authorize(remote)
-			if err == nil {
-				return inviteService.GuestHandler(), nil
-			}
-		}
-
-		if s.promisc {
-			return s.public.MakeHandler(conn)
-		}
-
-		auth := s.authorizer
-		if auth == nil {
-			auth = s.Replicator.Lister()
-		}
-
-		if s.latency != nil {
-			start := time.Now()
-			defer func() {
-				s.latency.With("part", "graph_auth").Observe(time.Since(start).Seconds())
-			}()
-		}
-		err = auth.Authorize(remote)
-		if err == nil {
-			return s.public.MakeHandler(conn)
-		}
-
-		// we also need to pass the other feed type up the stack...!
-		// TODO: wrap conn with a new remoteAddr
-		ggRemote, err := refs.NewFeedRefFromBytes(remote.PubKey(), refs.RefAlgoFeedGabby)
-		if err == nil {
-			err = auth.Authorize(ggRemote)
-			if err == nil {
-				level.Debug(s.info).Log("TODO", "found gg feed, using that. overhaul shs1 to support more payload in the handshake")
-				return s.public.MakeHandler(conn)
-			}
-		}
-
-		// we also need to pass the other feed type up the stack...!
-		// TODO: wrap conn with a new remoteAddr
-		bbRemote, err := refs.NewFeedRefFromBytes(remote.PubKey(), refs.RefAlgoFeedBendyButt)
-		if err == nil {
-			err = auth.Authorize(bbRemote)
-			if err == nil {
-				level.Debug(s.info).Log("TODO", "found bendy-butt feed, using that. overhaul shs1 to support more payload in the handshake")
-				return s.public.MakeHandler(conn)
-			}
-		}
-
-		// TOFU restore/resync
-		if lst, err := s.Users.List(); err == nil && len(lst) == 0 {
-			level.Warn(s.info).Log("event", "no stored feeds - attempting re-sync with trust-on-first-use")
-			if err := s.Replicate(s.KeyPair.ID()); err != nil {
-				return nil, fmt.Errorf("tofu replicate failed: %w", err)
-			}
-			return s.public.MakeHandler(conn)
-		}
+	// Register all muxrpc plugins and set up the network node.
+	if err := s.registerPlugins(ctx, storageRepo, namesPlug); err != nil {
 		return nil, err
 	}
-
-	// publish
-	authorLog, err := s.Users.Get(storedrefs.Feed(s.KeyPair.ID()))
-	if err != nil {
-		return nil, fmt.Errorf("failed to open user private index: %w", err)
-	}
-	s.master.Register(publish.NewPlug(log.With(s.info, "unit", "publish"), s.PublishLog, s.Groups, authorLog))
-
-	// private
-	// TODO: box2
-	userPrivs, err := s.Private.Get(multilog.Addr("box1:") + storedrefs.Feed(s.KeyPair.ID()))
-	if err != nil {
-		return nil, fmt.Errorf("failed to open user private index: %w", err)
-	}
-	s.master.Register(privplug.NewPlug(
-		log.With(s.info, "unit", "private"),
-		s.KeyPair.ID(),
-		s.Groups,
-		s.PublishLog,
-		private.NewUnboxerLog(s.ReceiveLog, userPrivs, s.KeyPair)))
-
-	// whoami
-	whoami := whoami.New(log.With(s.info, "unit", "whoami"), s.KeyPair.ID())
-	s.public.Register(whoami)
-	s.master.Register(whoami)
-
-	// blobs
-	blobs := blobs.New(log.With(s.info, "unit", "blobs"), s.KeyPair.ID(), s.BlobStore, wm)
-	s.public.Register(blobs)
-	s.master.Register(blobs) // TODO: does not need to open a createWants on this one?!
-
-	// gossiping (legacy and ebt)
-	fm := gossip.NewFeedManager(
-		ctx,
-		s.ReceiveLog,
-		s.Users,
-		log.With(s.info, "unit", "gossip"),
-		s.systemGauge,
-		s.eventCounter,
-	)
-	s.feedManager = fm
-
-	// outgoing gossip behavior
-	var histOpts = []interface{}{
-		gossip.Promisc(s.promisc),
-	}
-
-	if s.systemGauge != nil {
-		histOpts = append(histOpts, s.systemGauge)
-	}
-
-	if s.eventCounter != nil {
-		histOpts = append(histOpts, s.eventCounter)
-	}
-
-	if s.signHMACsecret != nil {
-		histOpts = append(histOpts, gossip.HMACSecret(s.signHMACsecret))
-	}
-
-	if s.numberOfConcurrentReplicationsPerPeer != 0 {
-		histOpts = append(histOpts, gossip.NumberOfConcurrentReplicationsPerPeer(s.numberOfConcurrentReplicationsPerPeer))
-	}
-
-	if s.numberOfConcurrentReplications != 0 {
-		histOpts = append(histOpts, gossip.NumberOfConcurrentReplications(s.numberOfConcurrentReplications))
-	}
-
-	s.verifyRouter, err = message.NewVerificationRouter(s.ReceiveLog.(*multimsg.WrappedLog), s.Users, s.signHMACsecret)
-	if err != nil {
-		return nil, err
-	}
-	s.setupForkDetection(s.verifyRouter)
-
-	if s.disableLegacyLiveReplication {
-		histOpts = append(histOpts, gossip.WithLive(!s.disableLegacyLiveReplication))
-	}
-
-	gossipPlug := gossip.NewFetcher(ctx,
-		log.With(s.info, "plugin", "gossip"),
-		storageRepo,
-		s.KeyPair.ID(),
-		s.ReceiveLog, s.Users,
-		fm, s.Replicator.Lister(),
-		s.verifyRouter,
-		histOpts...)
-
-	if s.disableEBT {
-		s.public.Register(gossipPlug)
-	} else {
-		ebtPlug := ebt.NewPlug(
-			log.With(s.info, "plugin", "ebt"),
-			s.KeyPair.ID(),
-			s.ReceiveLog,
-			s.Users,
-			fm,
-			sm,
-			s.verifyRouter,
-		)
-		s.public.Register(ebtPlug)
-		s.ebtHandler = ebtPlug.MUXRPCHandler
-
-		rn := negPlugin{replicateNegotiator{
-			logger:  log.With(s.info, "module", "replicate-negotiator"),
-			ebtOnly: s.ebtOnly,
-
-			lg:  gossipPlug.LegacyGossip,
-			ebt: ebtPlug.MUXRPCHandler,
-		}}
-		s.public.Register(rn)
-	}
-
-	// incoming createHistoryStream handler
-	hist := gossip.NewServer(ctx,
-		log.With(s.info, "unit", "gossip/hist"),
-		s.KeyPair.ID(),
-		s.ReceiveLog, s.Users,
-		s.Replicator.Lister(),
-		fm,
-		histOpts...)
-	s.public.Register(hist)
-
-	// get idx muxrpc handler
-	s.master.Register(get.New(s, s.Groups))
-
-	// about information
-	s.master.Register(namesPlug)
-
-	// (insecure) partial proof-of-concept for browser-core/demo
-	var searchIdx query.Searcher
-	if s.SearchIndex != nil {
-		searchIdx = s.SearchIndex
-	}
-	plug := partial.New(s.info,
-		fm,
-		s.Users,
-		s.ByType,
-		s.Tangles,
-		s.Channels,
-		s.Mentions,
-		s.Backlinks,
-		s.ReceiveLog, s,
-		s.GraphBuilder,
-		s.SeqResolver,
-		searchIdx)
-	s.public.Register(plug)
-	s.master.Register(plug)
-
-	// group managment
-	s.master.Register(groups.New(s.info, s.Groups))
-
-	// raw log plugins
-
-	sc := selfChecker{s.KeyPair.ID()}
-	s.master.Register(rawread.NewByTypePlugin(
-		s.info,
-		s.ReceiveLog,
-		s.ByType,
-		s.Private,
-		s.Groups,
-		s.SeqResolver,
-		sc))
-
-	s.master.Register(rawread.NewRXLog(s.ReceiveLog)) // createLogStream
-	s.master.Register(rawread.NewSortedStream(s.info, s.ReceiveLog, s.SeqResolver))
-	s.master.Register(hist) // createHistoryStream
-
-	s.master.Register(replicate.NewPlug(s.Users, s.KeyPair.ID(), s.Lister()))
-
-	s.master.Register(friends.New(s.info, s.KeyPair.ID(), s.GraphBuilder))
-
-	mh := namedPlugin{
-		h:    manifestBlob,
-		name: "manifest"}
-	s.master.Register(mh)
-	s.public.Register(mh)
-
-	var tplug = tangles.NewPlugin(
-		s.info,
-		s,
-		s.ReceiveLog,
-		s.Tangles,
-		s.Private,
-		s.Groups,
-		sc)
-	s.master.Register(tplug)
-
-	// tcp+shs
-	opts := network.Options{
-		Logger:              s.info,
-		Dialer:              s.dialer,
-		ListenAddr:          s.listenAddr,
-		AdvertsSend:         s.enableAdverts,
-		AdvertsConnectTo:    s.enableDiscovery,
-		KeyPair:             s.KeyPair,
-		AppKey:              s.appKey[:],
-		MakeHandler:         mkHandler,
-		ConnTracker:         s.networkConnTracker,
-		BefreCryptoWrappers: s.preSecureWrappers,
-		AfterSecureWrappers: s.postSecureWrappers,
-
-		EventCounter:    s.eventCounter,
-		SystemGauge:     s.systemGauge,
-		EndpointWrapper: s.edpWrapper,
-		Latency:         s.latency,
-
-		WebsocketAddr:    s.websocketAddr,
-		WebsocketTLSCert: s.websocketTLSCert,
-		WebsocketTLSKey:  s.websocketTLSKey,
-	}
-
-	networkNode, err := network.New(opts)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create network node: %w", err)
-	}
-	blobsGetPathPrefix := "/blobs/get/"
-	httpBlogsGet := func(w http.ResponseWriter, req *http.Request) {
-		hlog := log.With(s.info, "http-handler", "blobs/get")
-		rest := strings.TrimPrefix(req.URL.Path, blobsGetPathPrefix)
-		blobRef, err := refs.ParseBlobRef(rest)
-		if err != nil {
-			level.Error(hlog).Log("err", err.Error())
-			http.Error(w, "bad blob", http.StatusBadRequest)
-			return
-		}
-
-		br, err := s.BlobStore.Get(blobRef)
-		if err != nil {
-			s.WantManager.Want(blobRef)
-			level.Error(hlog).Log("err", err.Error())
-			http.Error(w, "no such blob", http.StatusNotFound)
-			return
-		}
-
-		// wh := w.Header()
-		// sniff content-type?
-		w.WriteHeader(http.StatusOK)
-		_, err = io.Copy(w, br)
-		if err != nil {
-			level.Error(hlog).Log("err", err.Error())
-		}
-	}
-
-	graphDumpPathPrefix := "/graph/dump"
-
-	simpleRouter := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if strings.HasPrefix(req.URL.Path, blobsGetPathPrefix) {
-			httpBlogsGet(w, req)
-			return
-		}
-
-		if strings.HasPrefix(req.URL.Path, graphDumpPathPrefix) {
-			s.GraphBuilder.DumpXMLOverHTTP(s.KeyPair.ID(), w, req)
-			return
-		}
-
-		http.Error(w, "404", http.StatusNotFound)
-	})
-	networkNode.HandleHTTP(cors.Default().Handler(simpleRouter))
-
-	inviteService, err = legacyinvites.New(
-		log.With(s.info, "unit", "legacyInvites"),
-		storageRepo,
-		s.KeyPair.ID(),
-		networkNode,
-		s.PublishLog,
-		s.ReceiveLog,
-		s.Replicator,
-		s.indexStore,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("sbot: failed to open legacy invites plugin: %w", err)
-	}
-	s.master.Register(inviteService.MasterPlugin())
-
-	// TODO: should be gossip.connect but conflicts with our namespace assumption
-	s.master.Register(conn.NewPlug(log.With(s.info, "unit", "conn"), networkNode, s))
-	s.master.Register(status.New(s))
-
-	s.public.Register(networkNode.TunnelPlugin())
-	s.Network = networkNode
 
 	return s, nil
 }
@@ -990,7 +613,9 @@ func (s *Sbot) ReindexAll() error {
 	}
 
 	// Reset the combined index state and re-index
-	s.combIdx.ResetState()
+	if err := s.combIdx.ResetState(); err != nil {
+		return err
+	}
 	return s.combIdx.Index(s.ReceiveLog)
 }
 
@@ -1022,6 +647,12 @@ func (s *Sbot) Close() error {
 		level.Debug(closeEvt).Log("msg", "feed manager closed")
 	}
 
+	// Wait for graph replicator goroutines (debounce, initial update) to exit.
+	if s.graphRepl != nil {
+		s.graphRepl.Wait()
+		level.Debug(closeEvt).Log("msg", "graph replicator stopped")
+	}
+
 	if s.Network != nil {
 		if err := s.Network.Close(); err != nil {
 			s.closeErr = fmt.Errorf("sbot: failed to close own network node: %w", err)
@@ -1030,11 +661,24 @@ func (s *Sbot) Close() error {
 		level.Debug(closeEvt).Log("msg", "connections closed")
 	}
 
-	if err := s.idxDone.Wait(); err != nil {
-		if s.closeErr == nil {
-			s.closeErr = fmt.Errorf("sbot: index group shutdown failed: %w", err)
+	// Wait for index goroutines with a timeout to prevent hanging shutdown.
+	idxDoneCh := make(chan error, 1)
+	go func() {
+		idxDoneCh <- s.idxMgr.Wait()
+	}()
+	select {
+	case err := <-idxDoneCh:
+		if err != nil {
+			if s.closeErr == nil {
+				s.closeErr = fmt.Errorf("sbot: index group shutdown failed: %w", err)
+			}
+			level.Warn(closeEvt).Log("msg", "index group had errors", "err", err)
 		}
-		level.Warn(closeEvt).Log("msg", "index group had errors", "err", err)
+	case <-time.After(30 * time.Second):
+		level.Error(closeEvt).Log("msg", "index group shutdown timed out after 30s")
+		if s.closeErr == nil {
+			s.closeErr = fmt.Errorf("sbot: index group shutdown timed out")
+		}
 	}
 	level.Debug(closeEvt).Log("msg", "waited for indexes to close")
 
@@ -1045,6 +689,9 @@ func (s *Sbot) Close() error {
 	if s.combIdx != nil {
 		if err := s.combIdx.FlushAndSave(); err != nil {
 			level.Warn(closeEvt).Log("msg", "combined index flush failed", "err", err)
+			if s.closeErr == nil {
+				s.closeErr = fmt.Errorf("sbot: combined index flush failed: %w", err)
+			}
 		}
 	}
 

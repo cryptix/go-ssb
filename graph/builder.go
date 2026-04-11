@@ -52,7 +52,13 @@ var (
 type GraphBuilder struct {
 	store GraphStore
 
-	idxInSync sync.WaitGroup
+	// Index in-flight counter guarded by idxMu. Callers of
+	// WaitUntilIndexesAreSynced() wait on idxCond until the counter reaches
+	// zero. This avoids the sync.WaitGroup reuse panic that occurs when
+	// Add() is called concurrently with Wait().
+	idxMu       sync.Mutex
+	idxCond     *sync.Cond
+	idxInFlight int64
 
 	log log.Logger
 
@@ -85,10 +91,7 @@ func NewBuilder(log log.Logger, store GraphStore, hmacSecret *[32]byte) *GraphBu
 
 		hmacSecret: hmacSecret,
 	}
-
-	// make sure we initialize the waitgroup so we have an opportunity to index
-	b.indexSyncStart()
-	defer b.indexSyncDone()
+	b.idxCond = sync.NewCond(&b.idxMu)
 
 	return b
 }

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-kit/kit/metrics"
 	"github.com/ssbc/go-muxrpc/v3"
@@ -414,7 +415,7 @@ func (n *Node) Serve(ctx context.Context, wrappers ...muxrpc.HandlerWrapper) err
 	}
 
 	// accept in a goroutine so that we can react to context cancel and close the listener
-	newConn := make(chan net.Conn)
+	newConn := make(chan net.Conn, 8)
 	go func() {
 		defer close(newConn)
 		for {
@@ -513,7 +514,9 @@ func (n *Node) Close() error {
 	}
 
 	if n.httpServer != nil {
-		if err := n.httpServer.Close(); err != nil {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if err := n.httpServer.Shutdown(shutdownCtx); err != nil {
 			return fmt.Errorf("ssb: failed to close http server: %w", err)
 		}
 	} else if n.httpLis != nil {
@@ -543,8 +546,8 @@ func (n *Node) Close() error {
 
 	if cnt := n.connTracker.Count(); cnt > 0 {
 		n.log.Log("event", "warning", "msg", "still open connections", "count", cnt)
-		n.connTracker.CloseAll()
 	}
+	n.connTracker.CloseAll()
 
 	return nil
 }

@@ -28,7 +28,7 @@ import (
 var ErrBlobBlocked = errors.New("ssb: unable to receive blob correctly")
 
 // NewWantManager returns the configured WantManager, using bs for storage and opts to configure it.
-func NewWantManager(bs ssb.BlobStore, opts ...WantManagerOption) *WantManager {
+func NewWantManager(bs ssb.BlobStore, opts ...WantManagerOption) (*WantManager, error) {
 	wmgr := &WantManager{
 		bs:        bs,
 		info:      log.NewNopLogger(),
@@ -42,7 +42,7 @@ func NewWantManager(bs ssb.BlobStore, opts ...WantManagerOption) *WantManager {
 
 	for i, o := range opts {
 		if err := o(wmgr); err != nil {
-			panic(fmt.Errorf("NewWantManager called with invalid option #%d: %w", i, err))
+			return nil, fmt.Errorf("NewWantManager: option #%d failed: %w", i, err)
 		}
 	}
 
@@ -58,7 +58,7 @@ func NewWantManager(bs ssb.BlobStore, opts ...WantManagerOption) *WantManager {
 
 	go wmgr.replicateLoop()
 
-	return wmgr
+	return wmgr, nil
 }
 
 type WantManager struct {
@@ -223,7 +223,8 @@ func (wmgr *WantManager) AllWants() []ssb.BlobWant {
 	for ref, dist := range wmgr.wants {
 		br, err := refs.ParseBlobRef(ref)
 		if err != nil {
-			panic(fmt.Errorf("invalid blob ref in want manager: %w", err))
+			// Skip invalid refs that somehow got into the wants map
+			continue
 		}
 		bws = append(bws, ssb.BlobWant{
 			Ref:  br,

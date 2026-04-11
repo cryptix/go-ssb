@@ -7,6 +7,7 @@ package sbot
 import (
 	"context"
 	"encoding/json"
+	"sync"
 
 	"github.com/ssbc/go-muxrpc/v3"
 )
@@ -36,19 +37,28 @@ func (h manifestHandler) HandleCall(ctx context.Context, req *muxrpc.Request) {
 	_ = req.Return(ctx, json.RawMessage(h))
 }
 
-func init() {
-	manifestMap := make(map[string]interface{})
-	err := json.Unmarshal([]byte(manifestBlob), &manifestMap)
-	if !json.Valid([]byte(manifestBlob)) || err != nil {
-		panic("manifestBlob is broken json: " + err.Error())
-	}
+var (
+	manifestOnce      sync.Once
+	manifestCondensed manifestHandler
+)
 
-	// remove the whitespaces
-	condensed, err := json.Marshal(manifestMap)
-	if err != nil {
-		panic(err)
-	}
-	manifestBlob = manifestHandler(condensed)
+// getManifest returns the condensed manifest JSON, initializing it on first call.
+func getManifest() manifestHandler {
+	manifestOnce.Do(func() {
+		manifestMap := make(map[string]interface{})
+		if err := json.Unmarshal([]byte(manifestBlob), &manifestMap); err != nil {
+			// manifestBlob is a compile-time constant; this should never fail.
+			manifestCondensed = manifestBlob
+			return
+		}
+		condensed, err := json.Marshal(manifestMap)
+		if err != nil {
+			manifestCondensed = manifestBlob
+			return
+		}
+		manifestCondensed = manifestHandler(condensed)
+	})
+	return manifestCondensed
 }
 
 // hardcoded manifest for MUXRPC clients

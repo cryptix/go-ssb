@@ -202,7 +202,7 @@ func (h *handler) dialViaRoom(ctx context.Context, req *muxrpc.Request) (interfa
 		return nil, fmt.Errorf("ctrl.dialViaRoom: failed to parse input %q: %w", dest, err)
 	}
 
-	err = h.node.DialViaRoom(tunAddr.Intermediary, tunAddr.Target)
+	err = h.node.DialViaRoom(ctx, tunAddr.Intermediary, tunAddr.Target)
 	if err != nil {
 		return nil, err
 	}

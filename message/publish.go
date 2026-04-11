@@ -108,6 +108,35 @@ func (pl *publishLog) Seq() int64 {
 	return pl.byAuthor.Seq()
 }
 
+// LastMsg returns the most recently published message for this author, using
+// the same in-memory cache that Publish itself consults. This avoids the race
+// where the byAuthor sublog has not yet observed the most recent publish.
+// Returns nil if no message has been published yet on this feed.
+func (pl *publishLog) LastMsg() (refs.Message, error) {
+	pl.mu.Lock()
+	defer pl.mu.Unlock()
+
+	if pl.lastMsg != nil {
+		return pl.lastMsg, nil
+	}
+
+	seq := pl.byAuthor.Seq()
+	if seq < 0 {
+		return nil, nil
+	}
+
+	rootSeqVal, err := pl.byAuthor.Get(seq)
+	if err != nil {
+		return nil, fmt.Errorf("publishLog: failed to retrieve current msg seq: %w", err)
+	}
+	mm, err := pl.receiveLog.Get(int64(*rootSeqVal))
+	if err != nil {
+		return nil, fmt.Errorf("publishLog: failed to load current msg: %w", err)
+	}
+	pl.lastMsg = mm.Message
+	return mm.Message, nil
+}
+
 // Get retrieves the message object by traversing the authors sublog to the root log
 func (pl *publishLog) Get(s int64) (*multimsg.MultiMessage, error) {
 	rootSeqVal, err := pl.byAuthor.Get(s)

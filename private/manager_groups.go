@@ -11,8 +11,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	margaret "github.com/ssbc/margaret/v2"
-
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb-refs/tfk"
 	"github.com/ssbc/go-ssb/private/box2"
@@ -52,15 +50,18 @@ func (mgr *Manager) Create(name string) (refs.MessageRef, refs.MessageRef, error
 		return emptyMsgRef, emptyMsgRef, err
 	}
 
-	// encrypt the group/init message
-	publicRoot, err := mgr.encryptAndPublish(jsonContent, keys.Recipients{groupKey})
+	// encrypt and publish the group/init message, keeping the full message so
+	// we can derive the cloaked id without waiting for the by-ref index to
+	// catch up.
+	initMsg, err := mgr.encryptAndPublishMessage(jsonContent, keys.Recipients{groupKey})
 	if err != nil {
 		return emptyMsgRef, emptyMsgRef, err
 	}
 
+	publicRoot := initMsg.Key()
 	groupKey.Metadata.GroupRoot = &publicRoot
 
-	cloakedID, err := mgr.deriveCloakedAndStoreNewKey(groupKey)
+	cloakedID, err := mgr.deriveCloakedFromMessage(groupKey, initMsg)
 	if err != nil {
 		return emptyMsgRef, emptyMsgRef, err
 	}
@@ -92,11 +93,6 @@ func (mgr *Manager) Join(groupKey []byte, root refs.MessageRef) (refs.MessageRef
 }
 
 func (mgr *Manager) deriveCloakedAndStoreNewKey(k keys.Recipient) (refs.MessageRef, error) {
-
-	if k.Key == nil {
-		return emptyMsgRef, fmt.Errorf("deriveCloaked: nil recipient key")
-	}
-
 	if k.Metadata.GroupRoot == nil {
 		return emptyMsgRef, fmt.Errorf("deriveCloaked: missing group root")
 	}
@@ -105,6 +101,22 @@ func (mgr *Manager) deriveCloakedAndStoreNewKey(k keys.Recipient) (refs.MessageR
 	initMsg, err := mgr.receiveByRef.Get(*k.Metadata.GroupRoot)
 	if err != nil {
 		return emptyMsgRef, err
+	}
+
+	return mgr.deriveCloakedFromMessage(k, initMsg)
+}
+
+// deriveCloakedFromMessage derives a cloaked group id from an already-fetched
+// init message, avoiding the by-ref index lookup that deriveCloakedAndStoreNewKey
+// performs. This is used by Create, where the init message was just published
+// and the by-ref index may not have caught up yet.
+func (mgr *Manager) deriveCloakedFromMessage(k keys.Recipient, initMsg refs.Message) (refs.MessageRef, error) {
+	if k.Key == nil {
+		return emptyMsgRef, fmt.Errorf("deriveCloaked: nil recipient key")
+	}
+
+	if k.Metadata.GroupRoot == nil {
+		return emptyMsgRef, fmt.Errorf("deriveCloaked: missing group root")
 	}
 
 	ctxt, err := box2.GetCiphertextFromMessage(initMsg)
@@ -303,13 +315,24 @@ func (mgr *Manager) PublishPostTo(groupID refs.MessageRef, text string) (refs.Me
 
 // TODO: protect against race of changing previous
 func (mgr *Manager) encryptAndPublish(c []byte, recps keys.Recipients) (refs.MessageRef, error) {
+	msg, err := mgr.encryptAndPublishMessage(c, recps)
+	if err != nil {
+		return refs.MessageRef{}, err
+	}
+	return msg.Key(), nil
+}
+
+// encryptAndPublishMessage is like encryptAndPublish but returns the full
+// published message, so callers that need the content immediately do not have
+// to round-trip through the by-ref index.
+func (mgr *Manager) encryptAndPublishMessage(c []byte, recps keys.Recipients) (refs.Message, error) {
 	if !json.Valid(c) {
-		return refs.MessageRef{}, fmt.Errorf("box2 manager: passed content is not valid JSON")
+		return nil, fmt.Errorf("box2 manager: passed content is not valid JSON")
 	}
 
 	prev, err := mgr.getPrevious()
 	if err != nil {
-		return refs.MessageRef{}, err
+		return nil, err
 	}
 
 	// now create the ciphertext
@@ -318,39 +341,42 @@ func (mgr *Manager) encryptAndPublish(c []byte, recps keys.Recipients) (refs.Mes
 	// TODO: maybe fix prev:null case by passing an empty ref instead of nil
 	ciphertext, err := bxr.Encrypt(c, mgr.author.ID(), prev, recps)
 	if err != nil {
-		return refs.MessageRef{}, err
+		return nil, err
 	}
 
-	return mgr.publishCiphertext(ciphertext)
+	return mgr.publishCiphertextMessage(ciphertext)
 }
 
 func (mgr *Manager) getPrevious() (refs.MessageRef, error) {
-	// get current sequence
-	currSeq := mgr.publog.Seq()
-
-	// if first message
-	if currSeq == margaret.SeqEmpty {
-		return refs.MessageRef{}, nil
-	}
-
-	// else get the message
-	mm, err := mgr.publog.Get(currSeq)
+	// Use the publish log's cached last-message view so we see the most recent
+	// publish even if the byAuthor sublog has not caught up yet. This matches
+	// the prev that publishLog.Publish will use for the next message.
+	lastMsg, err := mgr.publog.LastMsg()
 	if err != nil {
 		return refs.MessageRef{}, err
 	}
 
-	// and its key is the previous for that message
-	prev := mm.Message.Key()
-	return prev, nil
+	// if no message has been published yet on this feed, return a null hash
+	// (32 zero bytes) instead of an empty MessageRef, since box2 TFK encoding
+	// requires a valid format value.
+	if lastMsg == nil {
+		return refs.NewMessageRefFromBytes(bytes.Repeat([]byte{0}, 32), refs.RefAlgoMessageSSB1)
+	}
+
+	return lastMsg.Key(), nil
 }
 
 func (mgr *Manager) publishCiphertext(ctxt []byte) (refs.MessageRef, error) {
-	// TODO: format check for gabbygrove
-	content := base64.StdEncoding.EncodeToString(ctxt) + ".box2"
-
-	r, err := mgr.publog.Publish(content)
+	msg, err := mgr.publishCiphertextMessage(ctxt)
 	if err != nil {
 		return refs.MessageRef{}, err
 	}
-	return r.Key(), nil
+	return msg.Key(), nil
+}
+
+func (mgr *Manager) publishCiphertextMessage(ctxt []byte) (refs.Message, error) {
+	// TODO: format check for gabbygrove
+	content := base64.StdEncoding.EncodeToString(ctxt) + ".box2"
+
+	return mgr.publog.Publish(content)
 }

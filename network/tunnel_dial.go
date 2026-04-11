@@ -21,7 +21,7 @@ type connectArg struct {
 	Target refs.FeedRef `json:"target"`
 }
 
-func (n *Node) DialViaRoom(portal, target refs.FeedRef) error {
+func (n *Node) DialViaRoom(ctx context.Context, portal, target refs.FeedRef) error {
 	portalLogger := kitlog.With(n.log, "portal", portal.ShortSigil())
 
 	edp, has := n.GetEndpointFor(portal)
@@ -32,8 +32,6 @@ func (n *Node) DialViaRoom(portal, target refs.FeedRef) error {
 	var arg connectArg
 	arg.Portal = portal
 	arg.Target = target
-
-	ctx := context.TODO() // TODO: get serveCtx from sbot
 
 	ctx, cancel := context.WithCancel(ctx)
 	r, w, err := edp.Duplex(ctx, muxrpc.TypeBinary, muxrpc.Method{"tunnel", "connect"}, arg)

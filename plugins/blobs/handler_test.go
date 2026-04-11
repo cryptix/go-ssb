@@ -47,13 +47,15 @@ func TestReplicate(t *testing.T) {
 	r.NoError(err, "error src opening blob store")
 
 	srcLog := kitlog.With(kitlog.NewSyncLogger(kitlog.NewLogfmtLogger(os.Stderr)), "node", "src/alice")
-	srcWM := blobstore.NewWantManager(srcBS, blobstore.WantWithLogger(srcLog))
+	srcWM, err := blobstore.NewWantManager(srcBS, blobstore.WantWithLogger(srcLog))
+	r.NoError(err, "error creating src want manager")
 
 	dstBS, err := repo.OpenBlobStore(dstRepo)
 	r.NoError(err, "error dst opening blob store")
 
 	dstLog := kitlog.With(kitlog.NewSyncLogger(kitlog.NewLogfmtLogger(os.Stderr)), "node", "dst/bob")
-	dstWM := blobstore.NewWantManager(dstBS, blobstore.WantWithLogger(dstLog))
+	dstWM, err := blobstore.NewWantManager(dstBS, blobstore.WantWithLogger(dstLog))
+	r.NoError(err, "error creating dst want manager")
 
 	// do the dance
 	pkr1, pkr2, _ := test.PrepareConnectAndServe(t, srcRepo, dstRepo)

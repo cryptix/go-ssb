@@ -98,7 +98,8 @@ func XTestWantManager(t *testing.T) {
 			}()
 
 			log := testutils.NewRelativeTimeLogger(nil)
-			wmgr := NewWantManager(bs, WantWithLogger(log))
+			wmgr, err := NewWantManager(bs, WantWithLogger(log))
+			r.NoError(err)
 
 			for _, str := range tc.localBlobs {
 				br, err := bs.Put(strings.NewReader(str))

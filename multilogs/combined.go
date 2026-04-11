@@ -690,11 +690,14 @@ func (idx *CombinedIndex) updateSublogs(rxSeq int64, mm *multimsg.MultiMessage) 
 }
 
 // ResetState resets the CombinedIndex state to force a full re-index.
-func (idx *CombinedIndex) ResetState() {
+func (idx *CombinedIndex) ResetState() error {
 	idx.l.Lock()
 	defer idx.l.Unlock()
 	idx.latestSeq = margaret.SeqEmpty
-	persist.Save(idx.file, idx.latestSeq)
+	if err := persist.Save(idx.file, idx.latestSeq); err != nil {
+		return fmt.Errorf("combined: failed to persist reset state: %w", err)
+	}
+	return nil
 }
 
 // FlushAndSave flushes all roaring bitmap multilogs to disk and then persists

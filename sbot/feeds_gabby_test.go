@@ -101,16 +101,12 @@ func TestFeedsGabbySync(t *testing.T) {
 	bobsOwnLog, err := uf.Get(storedrefs.Feed(bob.KeyPair.ID()))
 	r.NoError(err)
 
+	testutils.WaitForSeq(t, bobsOwnLog, 9, 10*time.Second, "bob doesn't have his own log!")
 	r.Equal(int64(9), bobsOwnLog.Seq(), "bob doesn't have his own log!")
 
 	// dial
 	err = bob.Network.Connect(ctx, ali.Network.GetListenAddr())
 	r.NoError(err)
-
-	// give time to sync
-	time.Sleep(3 * time.Second)
-	// be done
-	ali.Network.GetConnTracker().CloseAll()
 
 	// check that bobs messages got to ali
 	auf, ok := ali.GetMultiLog("userFeeds")
@@ -118,6 +114,10 @@ func TestFeedsGabbySync(t *testing.T) {
 	bosLogAtAli, err := auf.Get(storedrefs.Feed(bob.KeyPair.ID()))
 	r.NoError(err)
 
+	// wait until ali has replicated all of bob's messages
+	testutils.WaitForSeq(t, bosLogAtAli, int64(9), 10*time.Second, "ali did not replicate bob's 10 messages")
+
+	ali.Network.GetConnTracker().CloseAll()
 	r.Equal(int64(9), bosLogAtAli.Seq())
 
 	qry := mutil.Indirect(ali.ReceiveLog, bosLogAtAli).Query()
@@ -133,7 +133,6 @@ func TestFeedsGabbySync(t *testing.T) {
 	cancel()
 	ali.Shutdown()
 	bob.Shutdown()
-	time.Sleep(1 * time.Second)
 	r.NoError(ali.Close())
 	r.NoError(bob.Close())
 

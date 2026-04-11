@@ -180,8 +180,8 @@ func createFeedsOneByOneTest(mode replicationMode) func(t *testing.T) {
 			t.Logf("connecting (%d)", i)
 			err = bob.Network.Connect(ctx, ali.Network.GetListenAddr())
 			r.NoError(err)
-			// TODO: replace with proper waitUntil bob has ali@i
-			time.Sleep(250 * time.Millisecond)
+			// Wait until bob has replicated ali's message
+			testutils.WaitForSeq(t, alisLog, int64(i), 10*time.Second, "bob did not replicate ali@%d", i)
 			bob.Network.GetConnTracker().CloseAll()
 
 			// check the note is updated correctly

@@ -7,7 +7,6 @@ package graph
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	margaret "github.com/ssbc/margaret/v2"
 	"github.com/zeebo/bencode"
@@ -33,19 +32,29 @@ const (
 )
 
 func (b *GraphBuilder) indexSyncStart() {
-	b.idxInSync.Add(1)
+	b.idxMu.Lock()
+	b.idxInFlight++
+	b.idxMu.Unlock()
 }
 
 func (b *GraphBuilder) indexSyncDone() {
-	// this delay is here so that the WaitGroup is held while serveIndex processes the next entry
-	time.AfterFunc(100*time.Millisecond, func() {
-		b.idxInSync.Done()
-	})
+	b.idxMu.Lock()
+	b.idxInFlight--
+	if b.idxInFlight == 0 {
+		b.idxCond.Broadcast()
+	}
+	b.idxMu.Unlock()
 }
 
-// WaitUntilIndexesAreSynced blocks until all the index processing is in sync with the rootlog
+// WaitUntilIndexesAreSynced blocks until all the index processing is in sync
+// with the rootlog. Safe to call concurrently with indexSyncStart/Done without
+// the sync.WaitGroup reuse panic.
 func (b *GraphBuilder) WaitUntilIndexesAreSynced() {
-	b.idxInSync.Wait()
+	b.idxMu.Lock()
+	for b.idxInFlight > 0 {
+		b.idxCond.Wait()
+	}
+	b.idxMu.Unlock()
 }
 
 // graphLogIndexer implements a LogIndexer for the graph builder.

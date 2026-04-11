@@ -35,8 +35,10 @@ func (mc *MultiCloser) Close() error {
 		err     error
 	)
 
-	for i, c := range mc.cs {
-		if cerr := c.Close(); cerr != nil {
+	// Close in reverse order (LIFO) so that resources opened first
+	// (like databases) are closed last, after their dependents.
+	for i := len(mc.cs) - 1; i >= 0; i-- {
+		if cerr := mc.cs[i].Close(); cerr != nil {
 			err = multierror.Append(err, fmt.Errorf("multiCloser: c%d failed: %w", i, cerr))
 			hasErrs = true
 		}

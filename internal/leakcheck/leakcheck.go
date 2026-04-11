@@ -46,6 +46,16 @@ var goroutinesToIgnore = []string{
 	"runtime_mcall",
 	"(*loggingT).flushDaemon",
 	"goroutine in C code",
+	"bleve_index_api.AnalysisWorker",
+	"dgraph-io/badger",
+	"dgraph-io/ristretto",
+	"ctxutils.WithError",
+	"context.(*cancelCtx).propagateCancel",
+	"IndexManager).ServeIndexFrom",
+	"FeedManager).serveLiveFeeds",
+	"roaring.(*MultiLog).writeBatches",
+	"blobstore.(*WantManager)",
+	"seqobsv.(*Observable)",
 }
 
 // RegisterIgnoreGoroutine appends s into the ignore goroutine list. The

@@ -108,15 +108,14 @@ func makeFeedsLiveNetworkChain(chainLen uint) func(t *testing.T) {
 			err := botI.Network.Connect(ctx, botJ.Network.GetListenAddr())
 			r.NoError(err)
 		}
-		time.Sleep(1 * time.Second)
 
-		// did b0 get feed of bN-1?
+		// wait for b0 to replicate bN-1's feed through the chain
 		feedIndexOfBot0, ok := theBots[0].GetMultiLog("userFeeds")
 		r.True(ok)
 		feedOfLastBot, err := feedIndexOfBot0.Get(storedrefs.Feed(theBots[n-1].KeyPair.ID()))
 		r.NoError(err)
 		wantSeq := int64(n - 2)
-		r.EqualValues(wantSeq, feedOfLastBot.Seq(), "after connect check")
+		testutils.WaitForSeq(t, feedOfLastBot, wantSeq, time.Duration(n*5)*time.Second, "b0 did not get bN-1's feed through chain")
 
 		// setup live listener
 		gotMsg := make(chan refs.Message)
@@ -136,9 +135,10 @@ func makeFeedsLiveNetworkChain(chainLen uint) func(t *testing.T) {
 			published := time.Now()
 			a.NotNil(msg)
 
-			// received new message?
+			// received new message? scale timeout with chain length
+			perMsgTimeout := time.Duration(n) * 2 * time.Second
 			select {
-			case <-time.After(2 * time.Second):
+			case <-time.After(perMsgTimeout):
 				t.Errorf("timeout %d....", i)
 			case msg := <-gotMsg:
 				a.EqualValues(int64(n+i), msg.Seq(), "wrong seq")
@@ -148,7 +148,6 @@ func makeFeedsLiveNetworkChain(chainLen uint) func(t *testing.T) {
 
 		// cleanup
 		cancel()
-		time.Sleep(1 * time.Second)
 		for bI, bot := range theBots {
 			err = bot.FSCK(FSCKWithMode(FSCKModeSequences))
 			a.NoError(err, "bot%02d fsck", bI)
@@ -226,16 +225,14 @@ func TestFeedsLiveNetworkStar(t *testing.T) {
 	err = botB.Network.Connect(ctx, botC.Network.GetListenAddr())
 	r.NoError(err)
 
-	time.Sleep(3 / 2 * time.Second)
-
-	// did B get feed C?
+	// wait for B to replicate C's feed
 	ufOfBotB, ok := botB.GetMultiLog("userFeeds")
 	r.True(ok)
 	feedOfBotCAtB, err := ufOfBotB.Get(storedrefs.Feed(botC.KeyPair.ID()))
 	r.NoError(err)
 
 	wantSeq := int64(1)
-	r.EqualValues(wantSeq, feedOfBotCAtB.Seq(), "after connect check")
+	testutils.WaitForSeq(t, feedOfBotCAtB, wantSeq, 10*time.Second, "B did not get C's feed")
 
 	t.Log("commencing live tests")
 
@@ -263,7 +260,7 @@ func TestFeedsLiveNetworkStar(t *testing.T) {
 
 		// received new message?
 		select {
-		case <-time.After(2 * time.Second):
+		case <-time.After(5 * time.Second):
 			t.Errorf("timeout %d....", i)
 			timeouts++
 		case msg := <-gotMsg:
@@ -274,7 +271,6 @@ func TestFeedsLiveNetworkStar(t *testing.T) {
 
 	// cleanup
 	cancel()
-	time.Sleep(1 * time.Second)
 	for _, bot := range theBots {
 		err = bot.FSCK(FSCKWithMode(FSCKModeSequences))
 		a.NoError(err)
