@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 
 	margaret "github.com/ssbc/margaret/v2"
 	"github.com/ssbc/margaret/v2/multilog/roaring"
@@ -38,6 +39,15 @@ func WithMetaFeedMode(enable bool) Option {
 	}
 }
 
+// publisherCache keeps publish logs per feed so that sequential operations on
+// the same metafeed share the lastMsg cache and don't produce duplicate SSB
+// sequence numbers. Stored as a pointer so value-receiver methods on
+// metaFeedsService share the same instance.
+type publisherCache struct {
+	mu   sync.Mutex
+	logs map[string]ssb.Publisher // keyed by feed ref string
+}
+
 type metaFeedsService struct {
 	rxLog        *multimsg.WrappedLog
 	indexManager ssb.IndexFeedManager
@@ -45,6 +55,7 @@ type metaFeedsService struct {
 	keys         *keys.Store
 
 	hmacSecret *[32]byte
+	publishers *publisherCache
 }
 
 func newMetaFeedService(rxLog *multimsg.WrappedLog, indexManager ssb.IndexFeedManager, users *roaring.MultiLog, keyStore *keys.Store, keypair ssb.KeyPair, hmacSecret *[32]byte) (*metaFeedsService, error) {
@@ -62,7 +73,8 @@ func newMetaFeedService(rxLog *multimsg.WrappedLog, indexManager ssb.IndexFeedMa
 		users:        users,
 		hmacSecret:   hmacSecret,
 
-		keys: keyStore,
+		keys:       keyStore,
+		publishers: &publisherCache{logs: make(map[string]ssb.Publisher)},
 	}, nil
 }
 
@@ -264,7 +276,7 @@ func (s metaFeedsService) CreateSubFeed(mount refs.FeedRef, purpose string, form
 		return refs.FeedRef{}, err
 	}
 
-	metaPublisher, err := message.OpenPublishLog(s.rxLog, s.users, mountKeyPair, message.SetHMACKey(s.hmacSecret))
+	metaPublisher, err := s.getPublisher(mount)
 	if err != nil {
 		return refs.FeedRef{}, err
 	}
@@ -413,7 +425,7 @@ func (s metaFeedsService) TombstoneSubFeed(mount, subfeed refs.FeedRef) error {
 		return err
 	}
 
-	metaPublisher, err := message.OpenPublishLog(s.rxLog, s.users, mountKeyPair, message.SetHMACKey(s.hmacSecret))
+	metaPublisher, err := s.getPublisher(mount)
 	if err != nil {
 		return err
 	}
@@ -428,6 +440,12 @@ func (s metaFeedsService) TombstoneSubFeed(mount, subfeed refs.FeedRef) error {
 	if err != nil {
 		return err
 	}
+
+	// evict the tombstoned subfeed from the publisher cache so that
+	// subsequent Publish calls will fail (signing key has been removed)
+	s.publishers.mu.Lock()
+	delete(s.publishers.logs, subfeed.String())
+	s.publishers.mu.Unlock()
 
 	// deregister the indexfeed, preventing it from being used to publish new index messages
 	_, err = s.indexManager.Deregister(subfeed)
@@ -484,6 +502,15 @@ func (s metaFeedsService) ListSubFeeds(mount refs.FeedRef) ([]ssb.SubfeedListEnt
 }
 
 func (s metaFeedsService) getPublisher(as refs.FeedRef) (ssb.Publisher, error) {
+	key := as.String()
+
+	s.publishers.mu.Lock()
+	if pub, ok := s.publishers.logs[key]; ok {
+		s.publishers.mu.Unlock()
+		return pub, nil
+	}
+	s.publishers.mu.Unlock()
+
 	kp, err := loadMetafeedKeyPairFromStore(s.keys, as)
 	if err != nil {
 		return nil, fmt.Errorf("metafeeds.Publish failed to load signing keypair: %w", err)
@@ -493,6 +520,16 @@ func (s metaFeedsService) getPublisher(as refs.FeedRef) (ssb.Publisher, error) {
 	if err != nil {
 		return nil, fmt.Errorf("metafeeds.Publish failed to open publish log (%w)", err)
 	}
+
+	s.publishers.mu.Lock()
+	// double-check in case another goroutine created it while we were loading
+	if pub, ok := s.publishers.logs[key]; ok {
+		s.publishers.mu.Unlock()
+		return pub, nil
+	}
+	s.publishers.logs[key] = publisher
+	s.publishers.mu.Unlock()
+
 	return publisher, nil
 }
 

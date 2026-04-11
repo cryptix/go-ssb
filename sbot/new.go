@@ -154,6 +154,7 @@ type Sbot struct {
 	IndexFeeds      ssb.IndexFeedManager
 
 	ssb.Replicator
+	graphRepl *graphReplicator // tracked for clean shutdown
 }
 
 // New creates an sbot instance using the passed options to configure it.
@@ -476,10 +477,11 @@ func New(fopts ...Option) (*Sbot, error) {
 	// which feeds to replicate (only needed when networking is enabled)
 	if !s.disableNetwork {
 		if s.Replicator == nil {
-			s.Replicator, err = s.newGraphReplicator()
+			s.graphRepl, err = s.newGraphReplicator()
 			if err != nil {
 				return nil, err
 			}
+			s.Replicator = s.graphRepl
 		}
 
 		// load our network frontier
@@ -643,6 +645,12 @@ func (s *Sbot) Close() error {
 	if s.feedManager != nil {
 		s.feedManager.Close()
 		level.Debug(closeEvt).Log("msg", "feed manager closed")
+	}
+
+	// Wait for graph replicator goroutines (debounce, initial update) to exit.
+	if s.graphRepl != nil {
+		s.graphRepl.Wait()
+		level.Debug(closeEvt).Log("msg", "graph replicator stopped")
 	}
 
 	if s.Network != nil {

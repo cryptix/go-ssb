@@ -94,6 +94,9 @@ func TestMetafeedManagment(t *testing.T) {
 	// TODO (2021-09-16): re-enable test after implementing routine for getting msg @ seqno
 	// r.Equal(lst[0].Purpose, t.Name())
 
+	// wait for the metafeed log to be indexed with the CreateSubFeed message
+	testutils.WaitForSeq(t, storedMetafeed, 0, 10*time.Second, "CreateSubFeed message not indexed")
+
 	// check we published the new sub-feed on the metafeed
 	firstMsg := checkSeq(int(0))
 
@@ -107,9 +110,10 @@ func TestMetafeedManagment(t *testing.T) {
 	r.NoError(err)
 	t.Log(postMsg.Key().String())
 
-	// check it has the msg
+	// check it has the msg -- wait for the subfeed log to be indexed
 	subfeedLog, err := mainbot.Users.Get(storedrefs.Feed(subfeedid))
 	r.NoError(err)
+	testutils.WaitForSeq(t, subfeedLog, 0, 10*time.Second, "subfeed message not indexed")
 
 	r.EqualValues(0, subfeedLog.Seq())
 
@@ -121,6 +125,9 @@ func TestMetafeedManagment(t *testing.T) {
 	lst, err = mainbot.MetaFeeds.ListSubFeeds(mainbot.KeyPair.ID())
 	r.NoError(err)
 	r.Len(lst, 0)
+
+	// wait for the tombstone message to be indexed on the metafeed log
+	testutils.WaitForSeq(t, storedMetafeed, 1, 10*time.Second, "tombstone message not indexed")
 
 	// check we published the tombstone update on the metafeed
 	secondMsg := checkSeq(int(1))
@@ -216,7 +223,18 @@ func TestMetafeedSync(t *testing.T) {
 	_, err = receiveBot.PublishLog.Publish(refs.NewContactFollow(multiBot.KeyPair.ID()))
 	r.NoError(err)
 
-	time.Sleep(4 * time.Second) // graph update delay
+	// wait for indexes to process the contact messages, then wait for both
+	// bots' graph-based replication lists to be updated. The debounce loop
+	// polls once per second so the leading-edge fire arrives shortly after
+	// index sync; poll here to avoid coupling to that interval.
+	multiBot.WaitUntilIndexesAreSynced()
+	receiveBot.WaitUntilIndexesAreSynced()
+	testutils.RequireEventually(t, func() bool {
+		return multiBot.Replicator.Lister().ReplicationList().Has(receiveBot.KeyPair.ID())
+	}, 10*time.Second, "multi doesnt want to peer with rxbot")
+	testutils.RequireEventually(t, func() bool {
+		return receiveBot.Replicator.Lister().ReplicationList().Has(multiBot.KeyPair.ID())
+	}, 10*time.Second, "rxbot doesnt want to peer with multi")
 
 	multibotWantList := multiBot.Replicator.Lister().ReplicationList()
 	r.True(multibotWantList.Has(receiveBot.KeyPair.ID()), "multi doesnt want to peer with rxbot. Count:%d", multibotWantList.Count())
@@ -225,26 +243,41 @@ func TestMetafeedSync(t *testing.T) {
 	firstConnectCtx, cancel := context.WithCancel(ctx)
 	err = receiveBot.Network.Connect(firstConnectCtx, multiBot.Network.GetListenAddr())
 	r.NoError(err)
-	time.Sleep(5 * time.Second)
+
+	// wait for rxbot to replicate multibot's metafeed
+	rxbotsVersionOfmultisMetafeed, err := receiveBot.Users.Get(storedrefs.Feed(multiBot.KeyPair.ID()))
+	r.NoError(err)
+	testutils.WaitForSeq(t, rxbotsVersionOfmultisMetafeed, 1, 10*time.Second, "should have all of the metafeeds messages")
+
 	cancel()
 	receiveBot.Network.GetConnTracker().CloseAll()
 
-	// check we got all the messages
+	// wait for the metafeed graph indexer + replicator debounce to reflect
+	// the newly-discovered subfeeds in rxbot's replication list. First let
+	// graph indexes finish processing the replicated metafeed messages, then
+	// nudge the replicator to rebuild its list (the debounce leading-edge
+	// fire polls once per second).
+	receiveBot.WaitUntilIndexesAreSynced()
+	if gr := receiveBot.graphRepl; gr != nil {
+		gr.TriggerUpdate()
+	}
+	testutils.RequireEventually(t, func() bool {
+		wl := receiveBot.Replicator.Lister().ReplicationList()
+		return wl.Has(multiBot.KeyPair.ID()) && wl.Has(subfeedClassic) && wl.Has(subfeedGabby)
+	}, 10*time.Second, "rxbot replication list did not pick up multi's subfeeds")
+
 	rxbotWantList := receiveBot.Replicator.Lister().ReplicationList()
-
-	rxbotsVersionOfmultisMetafeed, err := receiveBot.Users.Get(storedrefs.Feed(multiBot.KeyPair.ID()))
-	r.NoError(err)
-
-	// check rxbot got the metafeed
 	r.True(rxbotWantList.Has(multiBot.KeyPair.ID()), "rxbot doesn't want mutlibots metafeed")
-
 	r.EqualValues(1, rxbotsVersionOfmultisMetafeed.Seq(), "should have all of the metafeeds messages")
-
 	r.True(rxbotWantList.Has(subfeedClassic), "rxbot doesn't want classic subfeed")
 	r.True(rxbotWantList.Has(subfeedGabby), "rxbot doesn't want gg subfeed")
 
-	// reconnect to iterate and then sync subfeeds
-	time.Sleep(3 * time.Second) // wait for hops rebuild
+	// wait for hops rebuild before reconnecting to sync subfeeds
+	receiveBot.WaitUntilIndexesAreSynced()
+	testutils.RequireEventually(t, func() bool {
+		wl := receiveBot.Replicator.Lister().ReplicationList()
+		return wl.Has(subfeedClassic) && wl.Has(subfeedGabby)
+	}, 10*time.Second, "rxbot replication list not updated")
 
 	t.Log("2nd connect: sync the subfeeds")
 	err = receiveBot.Network.Connect(ctx, multiBot.Network.GetListenAddr())
@@ -437,22 +470,34 @@ func TestMetafeedIndexes(t *testing.T) {
 	mainFeedRef, err := bot.MetaFeeds.CreateSubFeed(mfId, "main", refs.RefAlgoFeedSSB1)
 	r.NoError(err, "main feed create failed")
 
-	// register an index for about messages
-	err = bot.MetaFeeds.RegisterIndex(mfId, mainFeedRef, "about")
-	r.NoError(err)
+	// register an index for about messages (retry because RegisterIndex
+	// internally does indirect lookups that can fail before indexes catch up)
+	testutils.RequireEventually(t, func() bool {
+		return bot.MetaFeeds.RegisterIndex(mfId, mainFeedRef, "about") == nil
+	}, 10*time.Second, "about index registration not ready")
 
 	// register an index for contact (follow) messages
-	err = bot.MetaFeeds.RegisterIndex(mfId, mainFeedRef, "contact")
-	r.NoError(err)
+	testutils.RequireEventually(t, func() bool {
+		return bot.MetaFeeds.RegisterIndex(mfId, mainFeedRef, "contact") == nil
+	}, 10*time.Second, "contact index registration not ready")
 
-	// get the actual index feeds so we can assert on them
-	aboutIndexId, err := bot.MetaFeeds.GetOrCreateIndex(mfId, mainFeedRef, "index", "about")
-	r.NoError(err)
+	// wait for indexes to process the registration messages, then retry
+	// GetOrCreateIndex until the indirect lookup succeeds
+	var aboutIndexId refs.FeedRef
+	testutils.RequireEventually(t, func() bool {
+		var tryErr error
+		aboutIndexId, tryErr = bot.MetaFeeds.GetOrCreateIndex(mfId, mainFeedRef, "index", "about")
+		return tryErr == nil
+	}, 10*time.Second, "about index not ready")
 	aboutIndex := getFeed(aboutIndexId)
 	checkSeq(aboutIndex, int(margaret.SeqEmpty))
 
-	contactIndexId, err := bot.MetaFeeds.GetOrCreateIndex(mfId, mainFeedRef, "index", "contact")
-	r.NoError(err)
+	var contactIndexId refs.FeedRef
+	testutils.RequireEventually(t, func() bool {
+		var tryErr error
+		contactIndexId, tryErr = bot.MetaFeeds.GetOrCreateIndex(mfId, mainFeedRef, "index", "contact")
+		return tryErr == nil
+	}, 10*time.Second, "contact index not ready")
 	contactIndex := getFeed(contactIndexId)
 	checkSeq(contactIndex, int(margaret.SeqEmpty))
 
@@ -461,8 +506,8 @@ func TestMetafeedIndexes(t *testing.T) {
 	r.NoError(err)
 	// contact index should still be empty
 	checkSeq(contactIndex, int(margaret.SeqEmpty))
-	// wait for indexes to catch up
-	bot.WaitUntilIndexesAreSynced()
+	// wait for the about index subfeed to receive its first entry
+	testutils.WaitForSeq(t, aboutIndex, 0, 10*time.Second, "about index subfeed did not receive entry")
 	// about index should have one message
 	checkSeq(aboutIndex, 1)
 
@@ -471,8 +516,8 @@ func TestMetafeedIndexes(t *testing.T) {
 	rando, err := repo.NewKeyPair(tRepo, "rando", refs.RefAlgoFeedSSB1)
 	_, err = bot.MetaFeeds.Publish(mainFeedRef, refs.NewContactFollow(rando.ID()))
 	r.NoError(err)
-	// wait for indexes to catch up
-	bot.WaitUntilIndexesAreSynced()
+	// wait for the contact index subfeed to receive its first entry
+	testutils.WaitForSeq(t, contactIndex, 0, 10*time.Second, "contact index subfeed did not receive entry")
 	// contact index should now have a message
 	checkSeq(contactIndex, 1)
 	// about index should still have one message
@@ -482,8 +527,8 @@ func TestMetafeedIndexes(t *testing.T) {
 	// publish another about to the main feed
 	_, err = bot.MetaFeeds.Publish(mainFeedRef, refs.NewAboutName(mainFeedRef, "goofier"))
 	r.NoError(err)
-	// wait for indexes to catch up
-	bot.WaitUntilIndexesAreSynced()
+	// wait for the about index subfeed to reach seq 1 (2 messages)
+	testutils.WaitForSeq(t, aboutIndex, 1, 10*time.Second, "about index subfeed did not receive second entry")
 	// about index should now have two messages
 	checkSeq(aboutIndex, 2)
 	// contact index still only have one message
@@ -563,8 +608,8 @@ func TestMetafeedIndexes(t *testing.T) {
 	lastContact, err := bot2.MetaFeeds.Publish(mainFeedRef, refs.NewContactFollow(rando.ID()))
 	r.NoError(err)
 
-	// wait for indexes to catch up
-	bot2.WaitUntilIndexesAreSynced()
+	// wait for the contact index subfeed to receive the second index message
+	testutils.WaitForSeq(t, contactIndex, 1, 10*time.Second, "contact index subfeed did not receive second entry after restart")
 
 	// load the final message
 	lastContactIdxMsg := getMsg(contactIndex, 1)

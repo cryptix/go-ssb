@@ -101,6 +101,7 @@ func TestFeedsGabbySync(t *testing.T) {
 	bobsOwnLog, err := uf.Get(storedrefs.Feed(bob.KeyPair.ID()))
 	r.NoError(err)
 
+	testutils.WaitForSeq(t, bobsOwnLog, 9, 10*time.Second, "bob doesn't have his own log!")
 	r.Equal(int64(9), bobsOwnLog.Seq(), "bob doesn't have his own log!")
 
 	// dial

@@ -72,6 +72,8 @@ func (sbot *Sbot) DontReplicate(r refs.FeedRef) error {
 type graphReplicator struct {
 	bot     *Sbot
 	current *lister
+	update  func()
+	wg      sync.WaitGroup
 }
 
 func (s *Sbot) newGraphReplicator() (*graphReplicator, error) {
@@ -80,19 +82,43 @@ func (s *Sbot) newGraphReplicator() (*graphReplicator, error) {
 	r.current = newLister()
 
 	replicateEvt := log.With(s.info, "event", "update-replicate")
-	update := r.makeUpdater(replicateEvt, s.KeyPair.ID(), int(s.hopCount))
+	r.update = r.makeUpdater(replicateEvt, s.KeyPair.ID(), int(s.hopCount))
 
 	// Populate the replication list once at startup from existing graph data.
 	// Hops() and Build() both wait for index sync internally, so this is safe
 	// to run concurrently with index loading.
-	go update()
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		r.update()
+	}()
 
 	// Re-run whenever the graph changes (new contact/metafeed messages).
 	// Uses GraphBuilder.Seq() so that non-contact messages don't trigger
-	// unnecessary hops recalculations.
-	go debounce(s.rootCtx, 30*time.Second, s.GraphBuilder, update)
+	// unnecessary hops recalculations. Leading-edge: the first observed
+	// change triggers update() immediately, so freshly-published contact
+	// messages are reflected in the replication list within ~1 second
+	// (the poll interval), without waiting out the full debounce window.
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		debounce(s.rootCtx, 30*time.Second, s.GraphBuilder, r.update)
+	}()
 
 	return &r, nil
+}
+
+// Wait blocks until all background goroutines (initial update + debounce) have exited.
+// Call after cancelling the root context.
+func (r *graphReplicator) Wait() {
+	r.wg.Wait()
+}
+
+// TriggerUpdate runs the replication-list rebuild synchronously. Intended for
+// tests that need to observe the effect of a just-published contact message
+// without waiting for the debounce window.
+func (r *graphReplicator) TriggerUpdate() {
+	r.update()
 }
 
 // makeUpdater returns a func that does the hop-walk and block checks, used together with debounce
@@ -135,23 +161,34 @@ type seqer interface {
 	Seq() int64
 }
 
-// debounce watches rxlog.Seq() for changes and calls work() after interval of
-// no further changes. The timer is not armed at startup; work() only fires when
-// at least one change has been observed. This means rxlog controls what counts
-// as a "change" — passing GraphBuilder instead of ReceiveLog limits work() to
-// graph-relevant messages only.
+// debounce watches rxlog.Seq() for changes and calls work() on the leading
+// edge (immediately when a change is first observed after a quiet window)
+// plus a trailing edge (when further changes arrive during the window, to
+// pick up the final state). This keeps the UI responsive for single-message
+// updates while still coalescing bursts.
+//
+// rxlog controls what counts as a "change" — passing GraphBuilder instead of
+// ReceiveLog limits work() to graph-relevant messages only.
 func debounce(ctx context.Context, interval time.Duration, rxlog seqer, work func()) {
 	var mu sync.Mutex
-	var pending bool
+	// coalescing: true while the trailing-edge timer is armed
+	// extraChange: true if changes were seen during the coalescing window
+	var (
+		coalescing  bool
+		extraChange bool
+	)
 	lastSeen := rxlog.Seq()
 
-	// Start the timer in a stopped state; it is only armed when a change is seen.
+	// Start the timer in a stopped state; armed only while we are coalescing.
 	timer := time.NewTimer(interval)
 	if !timer.Stop() {
 		<-timer.C
 	}
 
+	var innerDone sync.WaitGroup
+	innerDone.Add(1)
 	go func() {
+		defer innerDone.Done()
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		for {
@@ -161,29 +198,47 @@ func debounce(ctx context.Context, interval time.Duration, rxlog seqer, work fun
 			case <-ticker.C:
 				newSeq := rxlog.Seq()
 				mu.Lock()
-				if newSeq != lastSeen {
-					lastSeen = newSeq
-					pending = true
-					timer.Reset(interval)
+				if newSeq == lastSeen {
+					mu.Unlock()
+					continue
 				}
+				lastSeen = newSeq
+				if !coalescing {
+					// Leading edge: we were idle. Fire work() immediately and
+					// arm the timer to absorb any follow-up changes.
+					coalescing = true
+					extraChange = false
+					timer.Reset(interval)
+					mu.Unlock()
+					work()
+					continue
+				}
+				// Already coalescing: extend the window and remember that
+				// a trailing-edge run will be needed.
+				extraChange = true
+				timer.Reset(interval)
 				mu.Unlock()
 			}
 		}
 	}()
 
+	defer innerDone.Wait()
 	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-timer.C:
+			// Trailing edge: if more changes arrived during the window, run
+			// work() one last time to reflect the final state. Then leave
+			// coalescing so the next change can trigger a fresh leading edge.
 			mu.Lock()
-			if pending {
-				pending = false
-				mu.Unlock()
+			more := extraChange
+			coalescing = false
+			extraChange = false
+			mu.Unlock()
+			if more {
 				work()
-			} else {
-				mu.Unlock()
 			}
 		}
 	}

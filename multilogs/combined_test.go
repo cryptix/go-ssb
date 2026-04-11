@@ -147,6 +147,10 @@ func (tp testPublisher) Publish(_ interface{}) (refs.Message, error) {
 	return nil, fmt.Errorf("cant publish in test setting")
 }
 
+func (tp testPublisher) LastMsg() (refs.Message, error) {
+	return nil, nil
+}
+
 func (tp testPublisher) Seq() int64 {
 	return -1
 }

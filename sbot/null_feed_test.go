@@ -122,6 +122,10 @@ func TestNullFeed(t *testing.T) {
 
 	checkLogSeq(mainbot.ReceiveLog, len(intros)-1) // got all the messages
 
+	// wait for bert's user feed to be fully indexed (3 messages = seq 2)
+	bertLog := getUserLog(mainbot, "bert")
+	testutils.WaitForSeq(t, bertLog, 2, 10*time.Second, "bert's messages not indexed")
+
 	// check before drop
 	checkUserLogSeq(mainbot, "arny", 1)
 	checkUserLogSeq(mainbot, "bert", 2)

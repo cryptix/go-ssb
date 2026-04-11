@@ -78,9 +78,13 @@ func TestPrivateGroupsManualDecrypt(t *testing.T) {
 
 	suffix := []byte(".box2\"")
 
-	// make sure this is an encrypted message
-	msg, err := srh.Get(groupTangleRoot)
-	r.NoError(err)
+	// wait for indexes to process the group creation message
+	var msg refs.Message
+	testutils.RequireEventually(t, func() bool {
+		var tryErr error
+		msg, tryErr = srh.Get(groupTangleRoot)
+		return tryErr == nil
+	}, 10*time.Second, "group tangle root not indexed")
 
 	// can we decrypt it?
 	clear, err := srh.Groups.DecryptBox2Message(msg)
@@ -92,9 +96,13 @@ func TestPrivateGroupsManualDecrypt(t *testing.T) {
 	r.NoError(err, "failed to publish post to group")
 	t.Log("post", postRef.ShortSigil())
 
-	// make sure this is an encrypted message
-	msg, err = srh.Get(postRef)
-	r.NoError(err)
+	// make sure this is an encrypted message (retry because the by-ref index
+	// may not yet have processed the just-published post)
+	testutils.RequireEventually(t, func() bool {
+		var tryErr error
+		msg, tryErr = srh.Get(postRef)
+		return tryErr == nil
+	}, 10*time.Second, "group post not indexed by ref")
 	content := msg.ContentBytes()
 	r.True(bytes.HasSuffix(content, suffix), "%q", content)
 
@@ -126,9 +134,12 @@ func TestPrivateGroupsManualDecrypt(t *testing.T) {
 	r.NoError(err)
 	t.Log("added:", addMsgRef.ShortSigil())
 
-	// it's an encrypted message
-	msg, err = srh.Get(addMsgRef)
-	r.NoError(err)
+	// it's an encrypted message (retry: by-ref index may not have caught up)
+	testutils.RequireEventually(t, func() bool {
+		var tryErr error
+		msg, tryErr = srh.Get(addMsgRef)
+		return tryErr == nil
+	}, 10*time.Second, "add-member msg not indexed by ref")
 	r.True(bytes.HasSuffix(msg.ContentBytes(), suffix), "%q", content)
 
 	// have bot2 derive a key for bot1, they should be equal
@@ -154,13 +165,16 @@ func TestPrivateGroupsManualDecrypt(t *testing.T) {
 	talsCopyOfSrh, err := talsFeeds.Get(storedrefs.Feed(srh.KeyPair.ID()))
 	r.NoError(err)
 
-	// wait until replication completes
-	testutils.WaitForSeq(t, talsCopyOfSrh, 5, 10*time.Second, "tal did not replicate srh's messages")
+	// wait until replication completes.
+	// srh has published 4 messages (seq 3): 1 plaintext test + group/init +
+	// group post + group/add-member. tal has published 2 messages (seq 1):
+	// 1 plaintext test + 1 contact follow.
+	testutils.WaitForSeq(t, talsCopyOfSrh, 3, 10*time.Second, "tal did not replicate srh's messages")
 	testutils.WaitForSeq(t, srhsCopyOfTal, 1, 10*time.Second, "srh did not replicate tal's messages")
 
 	// did we get the expected number of messages?
 	r.EqualValues(1, srhsCopyOfTal.Seq())
-	r.EqualValues(5, talsCopyOfSrh.Seq())
+	r.EqualValues(3, talsCopyOfSrh.Seq())
 
 	// check messages can be decrypted
 	addMsgCopy, err := tal.Get(addMsgRef)
@@ -210,16 +224,19 @@ func TestPrivateGroupsManualDecrypt(t *testing.T) {
 	t.Log("decrypted reply:", string(replyContent))
 
 	// indexed?
+	//
+	// The helper verifies that the *count* of entries in the roaring bitmap
+	// for a given multilog key matches the expected count. A bitmap's Seq()
+	// tracks the maximum sequence processed which can exceed the number of
+	// entries in the bitmap (entries are sparse within the seq space), so we
+	// compare cardinality instead of seq.
 	chkCount := func(ml *roaring.MultiLog) func(addr multilog.Addr, cnt int) {
 		return func(addr multilog.Addr, cnt int) {
-			posts, err := ml.Get(addr)
-			r.NoError(err)
-
-			r.EqualValues(cnt-1, posts.Seq(), "margaret is 0-indexed (%d)", cnt)
-
 			bmap, err := ml.LoadInternalBitmap(addr)
 			r.NoError(err)
 			t.Logf("%q: %v", addr, bmap.ToArray())
+
+			r.EqualValues(cnt, bmap.GetCardinality(), "bitmap cardinality for %q", addr)
 		}
 	}
 
@@ -229,8 +246,13 @@ func TestPrivateGroupsManualDecrypt(t *testing.T) {
 	chkCount(tal.ByType)("string:test", 2)
 	chkCount(tal.ByType)("string:post", 2)
 
+	// box2:<self feed> is the set of box2 messages the local node can
+	// decrypt (not "messages authored by that feed"). srh authors 3 box2
+	// messages (init, post, add-member) and can decrypt tal's group reply
+	// once replication completes — 4 total. tal can decrypt all 3 of srh's
+	// box2 messages after joining plus its own reply — 4 total.
 	addr := multilog.Addr("box2:") + storedrefs.Feed(srh.KeyPair.ID())
-	chkCount(srh.Private)(addr, 3)
+	chkCount(srh.Private)(addr, 4)
 
 	addr = multilog.Addr("box2:") + storedrefs.Feed(tal.KeyPair.ID())
 	chkCount(tal.Private)(addr, 4)
