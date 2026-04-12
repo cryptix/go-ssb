@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"github.com/dgraph-io/badger/v3"
+	margaret "github.com/ssbc/margaret/v2"
 	"github.com/ssbc/margaret/v2/indexes"
 )
 
@@ -106,12 +107,12 @@ func NewBadgerSeqIndex(db *badger.DB, prefix []byte) *BadgerSeqIndex {
 }
 
 func (idx *BadgerSeqIndex) GetSeq() (int64, error) {
-	var val int64
+	var val int64 = margaret.SeqEmpty
 	err := idx.db.View(func(txn *badger.Txn) error {
 		item, err := txn.Get(idx.seqKey)
 		if err != nil {
 			if err == badger.ErrKeyNotFound {
-				return nil // return 0 for not-yet-tracked
+				return nil // return SeqEmpty for not-yet-tracked
 			}
 			return err
 		}

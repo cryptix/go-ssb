@@ -31,6 +31,12 @@ type IndexSyncer interface {
 	WaitUntilIndexesAreSynced()
 }
 
+// indexTracker records a live index's last-processed sequence number so that
+// WaitUntilIndexesAreSynced can verify every index has caught up to the log.
+type indexTracker struct {
+	lastProcessedSeq atomic.Int64
+}
+
 // IndexManager manages the lifecycle of all index goroutines: starting them,
 // tracking their sync progress, and waiting for them to finish. It also provides
 // lookup access to registered multilogs and simple indexes.
@@ -48,6 +54,10 @@ type IndexManager struct {
 
 	indexStateMu sync.Mutex
 	indexStates  map[string]string
+
+	// trackersMu guards trackers during registration (writes happen during init only).
+	trackersMu sync.Mutex
+	trackers   []*indexTracker
 
 	mlogIndicies map[string]*roaring.MultiLog
 	simpleIndex  map[string]mindexes.Index[int64]
@@ -122,12 +132,41 @@ func (im *IndexManager) GetIndexNamesMultiLog() []string {
 }
 
 // WaitUntilIndexesAreSynced blocks until all index processing is in sync with the rootlog.
+// It first waits for any in-flight processing to complete, then verifies that every
+// tracked index has processed at least up to the log's current sequence number.
+// This closes the race where a live query notification is pending but the index
+// goroutine hasn't woken up yet.
 func (im *IndexManager) WaitUntilIndexesAreSynced() {
+	// Phase 1: wait for any currently in-flight index processing.
 	im.idxSyncMu.Lock()
 	for atomic.LoadInt64(&im.idxNumSyncing) > 0 {
 		im.idxSyncCond.Wait()
 	}
 	im.idxSyncMu.Unlock()
+
+	// Phase 2: verify every tracked index has caught up to the log.
+	// The live query notification may be pending but the index goroutine
+	// hasn't woken up yet, so we poll briefly until all trackers report
+	// a lastProcessedSeq >= the log's current seq.
+	targetSeq := im.receiveLog.Seq()
+	if targetSeq >= 0 && len(im.trackers) > 0 {
+		const maxWait = 5 * time.Second
+		deadline := time.Now().Add(maxWait)
+		for time.Now().Before(deadline) {
+			allCaughtUp := true
+			for _, t := range im.trackers {
+				if t.lastProcessedSeq.Load() < targetSeq {
+					allCaughtUp = false
+					break
+				}
+			}
+			if allCaughtUp {
+				break
+			}
+			// Brief sleep to let live query goroutines wake up and process.
+			time.Sleep(1 * time.Millisecond)
+		}
+	}
 
 	if im.graphSyncer != nil {
 		im.graphSyncer.WaitUntilIndexesAreSynced()
@@ -136,7 +175,16 @@ func (im *IndexManager) WaitUntilIndexesAreSynced() {
 
 // AreIndexesSynced returns true if all indexes have caught up with the rootlog.
 func (im *IndexManager) AreIndexesSynced() bool {
-	return atomic.LoadInt64(&im.idxNumSyncing) == 0
+	if atomic.LoadInt64(&im.idxNumSyncing) != 0 {
+		return false
+	}
+	targetSeq := im.receiveLog.Seq()
+	for _, t := range im.trackers {
+		if t.lastProcessedSeq.Load() < targetSeq {
+			return false
+		}
+	}
+	return true
 }
 
 // IndexStates returns a snapshot of the current state of all indexes.
@@ -173,6 +221,13 @@ func (im *IndexManager) ServeIndex(name string, idx LogIndexer) {
 // ServeIndexFrom fills an index with messages from a specific log.
 func (im *IndexManager) ServeIndexFrom(name string, idx LogIndexer, msgs margaret.Log[*multimsg.MultiMessage]) {
 	im.syncStart()
+
+	// Register a tracker so WaitUntilIndexesAreSynced can verify this index's progress.
+	tracker := &indexTracker{}
+	tracker.lastProcessedSeq.Store(-1)
+	im.trackersMu.Lock()
+	im.trackers = append(im.trackers, tracker)
+	im.trackersMu.Unlock()
 
 	im.indexStateMu.Lock()
 	im.indexStates[name] = "pending"
@@ -231,6 +286,7 @@ func (im *IndexManager) ServeIndexFrom(name string, idx LogIndexer, msgs margare
 		}()
 
 		err := idx.Index(msgs)
+		tracker.lastProcessedSeq.Store(msgs.Seq())
 		im.syncDone()
 		if errors.Is(err, ssb.ErrShuttingDown) || errors.Is(err, context.Canceled) {
 			return nil
@@ -256,6 +312,7 @@ func (im *IndexManager) ServeIndexFrom(name string, idx LogIndexer, msgs margare
 		for range qry.Iter() {
 			im.syncStart()
 			err := idx.Index(msgs)
+			tracker.lastProcessedSeq.Store(msgs.Seq())
 			im.syncDone()
 			if err != nil {
 				if errors.Is(err, ssb.ErrShuttingDown) || errors.Is(err, context.Canceled) {

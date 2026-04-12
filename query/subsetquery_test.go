@@ -298,11 +298,13 @@ func TestSubsetQueryPlanExecution(t *testing.T) {
 	t.Run("by author", func(t *testing.T) {
 		r := require.New(t)
 
+		// arny published: about(0), contact(1), post/channel(8) = 3 messages
 		msgs, err := sp.QuerySubsetMessages(context.TODO(), mainbot.ReceiveLog, query.NewSubsetOpByAuthor(kpArny.ID()))
 		r.NoError(err)
-		r.Len(msgs, 2, "wrong number of resulting messages")
+		r.Len(msgs, 3, "wrong number of resulting messages")
 		r.Equal(testRefs[0], msgs[0])
 		r.Equal(testRefs[1], msgs[1])
+		r.Equal(testRefs[8], msgs[2])
 	})
 
 	t.Run("by type", func(t *testing.T) {

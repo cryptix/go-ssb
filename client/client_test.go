@@ -477,6 +477,9 @@ func TestTanglesThread(t *testing.T) {
 	r.NoError(err, "failed to call publish")
 	r.NotNil(rep2Ref)
 
+	// wait for all indexes (including "get" index) to process the published messages
+	srv.WaitUntilIndexesAreSynced()
+
 	opts := message.TanglesArgs{}
 	opts.Root = rootRef
 	opts.Limit = 3
