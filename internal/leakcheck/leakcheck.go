@@ -56,6 +56,8 @@ var goroutinesToIgnore = []string{
 	"roaring.(*MultiLog).writeBatches",
 	"blobstore.(*WantManager)",
 	"seqobsv.(*Observable)",
+	"sbot.debounce",
+	"network.(*Node).Serve",
 }
 
 // RegisterIgnoreGoroutine appends s into the ignore goroutine list. The

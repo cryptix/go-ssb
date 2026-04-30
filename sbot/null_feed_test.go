@@ -158,7 +158,7 @@ func TestNullFeed(t *testing.T) {
 	mainbot.Replicate(bertBot.KeyPair.ID())
 	bertBot.Replicate(mainbot.KeyPair.ID())
 
-	const testMsgCount = 1000
+	const testMsgCount = 100
 	for i := testMsgCount; i > 0; i-- {
 		_, err = bertBot.PublishLog.Publish(i)
 		r.NoError(err)

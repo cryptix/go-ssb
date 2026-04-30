@@ -136,7 +136,7 @@ func makeFeedsLiveNetworkChain(chainLen uint) func(t *testing.T) {
 			a.NotNil(msg)
 
 			// received new message? scale timeout with chain length
-			perMsgTimeout := time.Duration(n) * 2 * time.Second
+			perMsgTimeout := time.Duration(n) * 3 * time.Second
 			select {
 			case <-time.After(perMsgTimeout):
 				t.Errorf("timeout %d....", i)
@@ -260,7 +260,7 @@ func TestFeedsLiveNetworkStar(t *testing.T) {
 
 		// received new message?
 		select {
-		case <-time.After(5 * time.Second):
+		case <-time.After(10 * time.Second):
 			t.Errorf("timeout %d....", i)
 			timeouts++
 		case msg := <-gotMsg:

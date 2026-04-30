@@ -42,10 +42,6 @@ type publishLog struct {
 }
 
 func (pl *publishLog) Publish(content interface{}) (refs.Message, error) {
-	if pl.waitForIndexesCallback != nil {
-		pl.waitForIndexesCallback()
-	}
-
 	pl.mu.Lock()
 	defer pl.mu.Unlock()
 
@@ -61,6 +57,12 @@ func (pl *publishLog) Publish(content interface{}) (refs.Message, error) {
 		nextPrevious = pl.lastMsg.Key()
 		nextSequence = pl.lastMsg.Seq() + 1
 	} else {
+		// First publish or post-restart: byAuthor sublog must reflect the
+		// actual feed state, so wait for indexes to catch up.
+		if pl.waitForIndexesCallback != nil {
+			pl.waitForIndexesCallback()
+		}
+
 		seq := pl.byAuthor.Seq()
 
 		if seq < 0 {

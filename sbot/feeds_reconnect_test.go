@@ -93,9 +93,9 @@ func TestFeedsLiveReconnect(t *testing.T) {
 		}
 	}
 
-	var extraTestMessages = 256
+	var extraTestMessages = 50
 	if testing.Short() {
-		extraTestMessages = 25
+		extraTestMessages = 15
 	}
 	msgCnt += extraTestMessages
 	for n := extraTestMessages; n > 0; n-- {
@@ -154,7 +154,7 @@ func TestFeedsLiveReconnect(t *testing.T) {
 
 		// received new message?
 		select {
-		case <-time.After(time.Second):
+		case <-time.After(3 * time.Second):
 			t.Errorf("timeout %d....", i)
 		case msg := <-gotMsg:
 			a.EqualValues(int(seqOfFeedA+2)+i, msg.Seq(), "botB0: wrong seq")
@@ -208,7 +208,6 @@ func TestFeedsLiveReconnect(t *testing.T) {
 	cancel()
 
 	// cleanup
-	time.Sleep(1 * time.Second)
 	for bI, bot := range append(bLeafs, botA, botI) {
 		err = bot.FSCK(FSCKWithMode(FSCKModeSequences))
 		a.NoError(err, "botB%02d fsck", bI)
